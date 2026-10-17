@@ -1,6 +1,6 @@
-//! `kvm-smoke`: runs a few instructions in a KVM guest and checks what the guest wrote. Exits 0 if the guest ran, 5 if
-//! opening `/dev/kvm` was denied, 3 if it failed otherwise (such as a missing device), 4 if KVM refused to set up the
-//! guest, and 1 if the guest did not behave as expected.
+//! `kvm-smoke`: runs a few instructions in a KVM guest and checks what the guest wrote. Exits 0 if the guest ran; 5 or
+//! 6 if the device's permissions or the device cgroup denied opening `/dev/kvm`; 3 if opening failed otherwise, such
+//! as for a missing device; 4 if KVM refused to set up the guest; and 1 if the guest did not behave as expected.
 
 use std::process::ExitCode;
 
@@ -185,8 +185,6 @@ mod linux {
         const SET_REGS: u32 = 0x4090_ae82;
         const GET_SREGS: u32 = 0x8138_ae83;
         const SET_SREGS: u32 = 0x4138_ae84;
-
-        const _: () = assert!(size_of::<[u8; 312]>() == 0x138 && size_of::<[u64; 18]>() == 0x90);
 
         /// Starts the vCPU in real mode at the code: CS's base and selector 0, RIP at the code, RFLAGS' reserved bit.
         pub fn prepare(_vm: RawFd, vcpu: RawFd) -> io::Result<()> {
