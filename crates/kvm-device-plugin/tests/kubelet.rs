@@ -415,3 +415,49 @@ async fn registers_as_soon_as_kubelet_appears() {
     assert!(started.elapsed() < Duration::from_secs(1));
     plugin.stop().await;
 }
+
+/// The binary itself: it registers, and SIGTERM stops it cleanly. Its KVM check's result doesn't matter here.
+#[tokio::test]
+async fn the_binary_registers_and_stops_on_sigterm() {
+    let binary = env!("CARGO_BIN_EXE_kvm-device-plugin");
+    let invalid = std::process::Command::new(binary).arg("--slots=0").output().unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+
+    let dir = directory();
+    let mut kubelet = FakeKubelet::start(dir.path(), Answer::Accept);
+    let mut child = Child(
+        std::process::Command::new(binary)
+            .arg("--device-plugin-dir")
+            .arg(dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let registration = kubelet.registration().await;
+    assert!(endpoint::parse("devices.analogsea.ca_kvm", &registration.request.endpoint).is_some());
+
+    let pid = libc::pid_t::try_from(child.0.id()).unwrap();
+    // SAFETY: kill only sends a signal to the child process.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the plugin did not stop");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(status.success(), "{status}");
+    assert_eq!(plugin_sockets(dir.path()), Vec::<String>::new());
+}
+
+/// Kills the child process if a test fails before it exits.
+struct Child(std::process::Child);
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
