@@ -1,5 +1,6 @@
 //! The plugin against a fake kubelet over real Unix sockets.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,7 +29,10 @@ const RESOURCE: &str = "example.com/kvm";
 const STEM: &str = "example.com_kvm";
 const SLOTS: u32 = 3;
 const REGISTER_TIMEOUT: Duration = Duration::from_millis(300);
+const WATCH_GRACE: Duration = Duration::from_millis(100);
 const WAIT: Duration = Duration::from_secs(5);
+/// Longer than the watch grace and several polls.
+const QUIET: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, Copy)]
 enum Answer {
@@ -56,6 +60,8 @@ struct Registrar {
     dir: PathBuf,
     answer: Arc<Mutex<Answer>>,
     registrations: mpsc::UnboundedSender<Registered>,
+    /// Like kubelet's endpoint store, which rejects a socket path it already knows. This one never forgets.
+    endpoints: Mutex<HashSet<String>>,
 }
 
 #[tonic::async_trait]
@@ -65,6 +71,9 @@ impl Registration for Registrar {
             request.metadata().get("grpc-timeout").map(|v| grpc_timeout(v.to_str().unwrap()));
         let request = request.into_inner();
         let answer = *self.answer.lock().unwrap();
+        if !self.endpoints.lock().unwrap().insert(request.endpoint.clone()) {
+            return Err(Status::internal("device plugin already connected"));
+        }
         let mut registered = Registered { request, deadline, client: None, devices: None };
         if !matches!(answer, Answer::Refuse) {
             let mut client = DevicePluginClient::new(
@@ -104,8 +113,12 @@ impl FakeKubelet {
         let (tx, registrations) = mpsc::unbounded_channel();
         let stop = CancellationToken::new();
         let listener = UnixListener::bind(dir.join("kubelet.sock")).unwrap();
-        let registrar =
-            Registrar { dir: dir.into(), answer: Arc::clone(&answer), registrations: tx };
+        let registrar = Registrar {
+            dir: dir.into(),
+            answer: Arc::clone(&answer),
+            registrations: tx,
+            endpoints: Mutex::default(),
+        };
         tokio::spawn(Server::builder().serve_with_incoming_shutdown(
             RegistrationServer::new(registrar),
             UnixListenerStream::new(listener),
@@ -120,6 +133,12 @@ impl FakeKubelet {
 
     async fn registration(&mut self) -> Registered {
         tokio::time::timeout(WAIT, self.registrations.recv()).await.unwrap().unwrap()
+    }
+
+    /// Asserts that nothing registers for a while.
+    async fn no_registration(&mut self) {
+        let next = tokio::time::timeout(QUIET, self.registrations.recv()).await;
+        assert!(next.is_err(), "unexpected registration {:?}", next.unwrap().map(|r| r.request));
     }
 }
 
@@ -154,7 +173,7 @@ impl Plugin {
             poll_interval: Duration::from_millis(20),
             health_interval: Duration::from_secs(3600),
             probe_timeout: Duration::from_secs(1),
-            watch_grace: Duration::from_secs(1),
+            watch_grace: WATCH_GRACE,
             shutdown_grace: Duration::from_secs(1),
         };
         let stop = CancellationToken::new();
@@ -173,7 +192,7 @@ impl Plugin {
 }
 
 async fn connect(path: &Path) -> Result<Channel, Status> {
-    let uri = format!("unix:{}", path.display());
+    let uri = format!("unix://{}", path.display());
     Endpoint::from_shared(uri)
         .unwrap()
         .connect()
@@ -241,10 +260,7 @@ async fn retries_until_kubelet_appears_and_accepts() {
     let mut kubelet = FakeKubelet::start(&dir, Answer::Refuse);
     let refused = kubelet.registration().await.request;
     kubelet.answer(Answer::Accept);
-    let mut accepted = kubelet.registration().await.request;
-    while accepted.endpoint == refused.endpoint {
-        accepted = kubelet.registration().await.request;
-    }
+    let accepted = kubelet.registration().await.request;
     let (_, refused_generation) = endpoint::parse(STEM, &refused.endpoint).unwrap();
     let (_, accepted_generation) = endpoint::parse(STEM, &accepted.endpoint).unwrap();
     assert!(accepted_generation > refused_generation);
@@ -274,6 +290,10 @@ async fn stopping_interrupts_backoff() {
     let mut kubelet = FakeKubelet::start(dir.path(), Answer::Refuse);
     let plugin = Plugin::start_with(dir.path(), Duration::from_secs(60));
     kubelet.registration().await;
+    // Teardown removes the refused generation's socket just before backing off.
+    while !plugin_sockets(dir.path()).is_empty() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     assert!(plugin.stop().await < Duration::from_millis(200));
 }
 
@@ -297,5 +317,101 @@ async fn sweeps_only_stale_sockets_of_its_own_resource() {
     let mut expected = vec![live, not_a_socket, other_resource, registration.request.endpoint];
     expected.sort();
     assert_eq!(plugin_sockets(dir.path()), expected);
+    plugin.stop().await;
+}
+
+/// Plugin socket deletion, as by kubelet's restart cleanup, leads to a new socket and registration.
+#[tokio::test]
+async fn reregisters_when_its_socket_is_deleted() {
+    let dir = directory();
+    let mut kubelet = FakeKubelet::start(dir.path(), Answer::Accept);
+    let plugin = Plugin::start(dir.path());
+    let mut first = kubelet.registration().await;
+    first.devices.as_mut().unwrap().next().await.unwrap().unwrap();
+    std::fs::remove_file(dir.path().join(&first.request.endpoint)).unwrap();
+
+    let second = kubelet.registration().await;
+    assert_ne!(second.request.endpoint, first.request.endpoint);
+    let ended = tokio::time::timeout(WAIT, first.devices.unwrap().next()).await.unwrap();
+    assert!(matches!(ended, None | Some(Err(_))), "the old generation's stream must end");
+    kubelet.no_registration().await;
+    assert_eq!(plugin_sockets(dir.path()), [second.request.endpoint]);
+    plugin.stop().await;
+}
+
+#[tokio::test]
+async fn reregisters_once_with_a_restarted_kubelet() {
+    for clean_up_plugin_sockets in [true, false] {
+        let dir = directory();
+        let mut old = FakeKubelet::start(dir.path(), Answer::Accept);
+        let plugin = Plugin::start(dir.path());
+        let first = old.registration().await;
+        drop(old);
+        std::fs::remove_file(dir.path().join("kubelet.sock")).unwrap();
+        if clean_up_plugin_sockets {
+            std::fs::remove_file(dir.path().join(&first.request.endpoint)).unwrap();
+        }
+
+        let mut new = FakeKubelet::start(dir.path(), Answer::Accept);
+        let second = new.registration().await;
+        assert_ne!(second.request.endpoint, first.request.endpoint);
+        new.no_registration().await;
+        plugin.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn reregisters_when_kubelet_stops_watching() {
+    let dir = directory();
+    let mut kubelet = FakeKubelet::start(dir.path(), Answer::Accept);
+    let plugin = Plugin::start(dir.path());
+    let first = kubelet.registration().await;
+    kubelet.no_registration().await;
+    // Cancelling the device stream while keeping the connection leaves the plugin unwatched.
+    drop(first.devices);
+
+    let second = kubelet.registration().await;
+    assert_ne!(second.request.endpoint, first.request.endpoint);
+    plugin.stop().await;
+}
+
+#[tokio::test]
+async fn overlapping_instances_keep_their_own_sockets() {
+    let dir = directory();
+    let mut kubelet = FakeKubelet::start(dir.path(), Answer::Accept);
+    let older = Plugin::start(dir.path());
+    let mut first = kubelet.registration().await;
+    first.devices.as_mut().unwrap().next().await.unwrap().unwrap();
+    let newer = Plugin::start(dir.path());
+    let mut second = kubelet.registration().await;
+    let mut expected = vec![first.request.endpoint.clone(), second.request.endpoint.clone()];
+    expected.sort();
+    assert_eq!(
+        plugin_sockets(dir.path()),
+        expected,
+        "the newer instance's sweep keeps live sockets"
+    );
+
+    older.stop().await;
+    let ended = tokio::time::timeout(WAIT, first.devices.as_mut().unwrap().next()).await.unwrap();
+    assert!(matches!(ended, None | Some(Err(_))));
+    assert_eq!(plugin_sockets(dir.path()), [second.request.endpoint.clone()]);
+    kubelet.no_registration().await;
+    let devices = second.devices.as_mut().unwrap();
+    devices.next().await.unwrap().unwrap();
+    let pending = tokio::time::timeout(QUIET, devices.next()).await;
+    assert!(pending.is_err(), "the newer instance's stream must stay open");
+    newer.stop().await;
+}
+
+#[tokio::test]
+async fn registers_as_soon_as_kubelet_appears() {
+    let dir = directory();
+    let plugin = Plugin::start_with(dir.path(), Duration::from_secs(60));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let mut kubelet = FakeKubelet::start(dir.path(), Answer::Accept);
+    let started = Instant::now();
+    kubelet.registration().await;
+    assert!(started.elapsed() < Duration::from_secs(1));
     plugin.stop().await;
 }

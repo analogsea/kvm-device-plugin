@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::Stream;
 use tokio::sync::watch;
@@ -28,13 +30,45 @@ type DeviceStream = Pin<Box<dyn Stream<Item = Result<ListAndWatchResponse, Statu
 pub struct Service {
     pool: Pool,
     health: HealthHandle,
+    watchers: Watchers,
     stop: CancellationToken,
 }
 
 impl Service {
     #[must_use]
-    pub const fn new(pool: Pool, health: HealthHandle, stop: CancellationToken) -> Self {
-        Self { pool, health, stop }
+    pub const fn new(
+        pool: Pool,
+        health: HealthHandle,
+        watchers: Watchers,
+        stop: CancellationToken,
+    ) -> Self {
+        Self { pool, health, watchers, stop }
+    }
+}
+
+/// Counts open device streams.
+#[derive(Debug, Clone, Default)]
+pub struct Watchers(Arc<AtomicUsize>);
+
+impl Watchers {
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn watch(&self) -> WatchGuard {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        WatchGuard(Arc::clone(&self.0))
+    }
+}
+
+/// Owned by a device stream, so the count drops however the stream ends, including when the client goes away.
+#[derive(Debug)]
+struct WatchGuard(Arc<AtomicUsize>);
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -59,7 +93,8 @@ impl DevicePlugin for Service {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<DeviceStream>, Status> {
-        let stream = watch_devices(self.pool, self.health.subscribe(), self.stop.clone());
+        let guard = self.watchers.watch();
+        let stream = watch_devices(self.pool, self.health.subscribe(), self.stop.clone(), guard);
         Ok(Response::new(Box::pin(stream)))
     }
 
@@ -97,10 +132,11 @@ fn watch_devices(
     pool: Pool,
     health: watch::Receiver<Health>,
     stop: CancellationToken,
+    guard: WatchGuard,
 ) -> impl Stream<Item = Result<ListAndWatchResponse, Status>> + Send + 'static {
     futures_util::stream::unfold(
-        (health, stop, true),
-        move |(mut health, stop, first)| async move {
+        (health, stop, guard, true),
+        move |(mut health, stop, guard, first)| async move {
             if !first {
                 tokio::select! {
                     biased;
@@ -112,7 +148,7 @@ fn watch_devices(
                 return None;
             }
             let healthy = health.borrow_and_update().is_healthy();
-            Some((Ok(devices(pool, healthy)), (health, stop, false)))
+            Some((Ok(devices(pool, healthy)), (health, stop, guard, false)))
         },
     )
 }
@@ -187,7 +223,8 @@ mod tests {
         let interval = Duration::from_secs(3600);
         let (monitor, handle) = Monitor::new(Arc::new(probe), interval, interval);
         let stop = CancellationToken::new();
-        (Service::new(Pool::new(SLOTS), handle, stop.clone()), monitor, stop)
+        let service = Service::new(Pool::new(SLOTS), handle, Watchers::default(), stop.clone());
+        (service, monitor, stop)
     }
 
     async fn healthy_service() -> (Service, Monitor, CancellationToken) {
@@ -281,6 +318,7 @@ mod tests {
         let watch = || async { service.list_and_watch(Request::new(Empty {})).await.unwrap() };
         let mut first = watch().await.into_inner();
         let mut second = watch().await.into_inner();
+        assert_eq!(service.watchers.count(), 2);
         let all = |health: &str| {
             (0..SLOTS).map(|i| (format!("kvm-{i}"), health.to_owned())).collect::<Vec<_>>()
         };
@@ -307,6 +345,7 @@ mod tests {
         }
 
         drop(second);
+        assert_eq!(service.watchers.count(), 1);
         healthy.store(true, Ordering::SeqCst);
         monitor.check(&stop).await;
         assert_eq!(next(first.next().await), healthy_list);
@@ -314,7 +353,9 @@ mod tests {
         stop.cancel();
         let ended = tokio::time::timeout(Duration::from_secs(5), first.next()).await.unwrap();
         assert!(ended.is_none());
+        drop(first);
         assert!(watch().await.into_inner().next().await.is_none());
+        assert_eq!(service.watchers.count(), 0);
     }
 
     #[tokio::test]
