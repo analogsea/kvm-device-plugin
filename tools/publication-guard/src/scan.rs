@@ -134,6 +134,15 @@ pub fn scan_push(
     Ok(report)
 }
 
+/// Scans all reachable Git history for secrets, without loading private configuration.
+///
+/// # Errors
+///
+/// Fails closed if Git or Gitleaks cannot complete the scan.
+pub fn scan_history(repo: &Path) -> Result<bool, Error> {
+    gitleaks(repo, &["--all".to_owned()])
+}
+
 /// The `rev-list` arguments selecting commits the remote doesn't have yet.
 fn outgoing_range(repo: &Path, update: &RefUpdate) -> Result<Vec<String>, Error> {
     // Trust only the destination's advertised object, never local tracking refs.
@@ -237,7 +246,10 @@ fn gitleaks(repo: &Path, range: &[String]) -> Result<bool, Error> {
         .arg("--gitleaks-ignore-path")
         .arg(&dir.0)
         .arg("--log-opts")
-        .arg(format!("--root --no-textconv --no-ext-diff {}", range.join(" ")))
+        .arg(format!(
+            "--root --no-textconv --no-ext-diff --diff-merges=first-parent --text {}",
+            range.join(" ")
+        ))
         .arg(git_dir.trim())
         .env_remove("GITLEAKS_CONFIG")
         .env_remove("GITLEAKS_CONFIG_TOML")

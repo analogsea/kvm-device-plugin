@@ -27,3 +27,10 @@ block the push. Git text conversion and root-diff suppression cannot hide conten
 paths and metadata cannot leak into diagnostics.
 
 Install the hook with `mise run hooks:install`. Never bypass it; if it blocks, fix the content.
+
+## CI history scanning
+
+`publication-guard scan-history` scans all reachable Git history with the same enforced Gitleaks configuration.
+It does not load the private deny-list. CI must fetch full history; a shallow checkout only scans the history it has.
+Gitleaks output is captured, and the command reports only success or failure. This does not replace the local
+private-term check, and it cannot prevent a secret from first reaching GitHub; push protection is a separate layer.

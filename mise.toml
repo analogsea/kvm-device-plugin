@@ -18,4 +18,9 @@ run = [
   "cargo test --workspace --locked",
   "rumdl check .",
   "shellcheck .githooks/pre-push",
+  "actionlint",
 ]
+
+[tasks."check:secrets"]
+description = "Scan all reachable history with enforced Gitleaks defaults; no private configuration"
+run = "cargo run --quiet --locked --package publication-guard -- scan-history"

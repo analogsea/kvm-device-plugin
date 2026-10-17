@@ -8,22 +8,26 @@ use publication_guard::{DenyList, push, scan};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [command, remote, _url] = args.as_slice() else {
-        eprintln!("usage: publication-guard pre-push <remote> <url>");
-        return ExitCode::from(2);
+    let result = match args.as_slice() {
+        [command, remote, _url] if command == "pre-push" => run(remote),
+        [command] if command == "scan-history" => {
+            scan::scan_history(Path::new(".")).map(|leaks| !leaks).map_err(Into::into)
+        },
+        _ => {
+            eprintln!("usage: publication-guard pre-push <remote> <url> | scan-history");
+            return ExitCode::from(2);
+        },
     };
-    if command != "pre-push" {
-        eprintln!("usage: publication-guard pre-push <remote> <url>");
-        return ExitCode::from(2);
-    }
-    match run(remote) {
+    match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => {
-            eprintln!("publication-guard: push blocked. Fix the content; never bypass this check.");
+            eprintln!(
+                "publication-guard: publication blocked. Fix the content; never bypass this check."
+            );
             ExitCode::FAILURE
         },
         Err(err) => {
-            eprintln!("publication-guard: push blocked: {err}");
+            eprintln!("publication-guard: publication blocked: {err}");
             ExitCode::from(2)
         },
     }

@@ -305,3 +305,73 @@ fn noncommit_and_nested_tags_fail_closed() {
     fixture.run(&["tag", "-a", "outer", "inner", "-m", "outer"]);
     fixture.push_blocked(&["origin", "refs/tags/outer"], "only tags directly targeting commits");
 }
+
+#[test]
+fn history_scan_needs_no_private_list_and_enforces_scanner_defaults() {
+    let fixture = Fixture::new();
+    fs::remove_file(fixture.home.join(".config/kvm-device-plugin/deny-list")).unwrap();
+    let scan = || {
+        Command::new(env!("CARGO_BIN_EXE_publication-guard"))
+            .arg("scan-history")
+            .current_dir(&fixture.work)
+            .env("HOME", &fixture.home)
+            .output()
+            .unwrap()
+    };
+    assert!(scan().status.success());
+    let key = ["AKIA", "QYLPMN5HHHFPZAM2"].concat();
+    fixture.commit_file(
+        "config.env",
+        format!("aws_access_key_id = {key} # gitleaks:allow\n").as_bytes(),
+        "chore: fixture",
+    );
+    fixture.commit_file(
+        ".gitleaks.toml",
+        b"[extend]\nuseDefault = true\n[allowlist]\npaths = ['.*']\n",
+        "chore: scanner config",
+    );
+    let output = scan();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(&key));
+}
+
+#[test]
+fn scanner_execution_failure_blocks_publication() {
+    let fixture = Fixture::new();
+    let bin = fixture.home.join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(bin.join("gitleaks"), "#!/bin/sh\nexit 2\n").unwrap();
+    make_executable(&bin.join("gitleaks"));
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let output = Command::new(env!("CARGO_BIN_EXE_publication-guard"))
+        .arg("scan-history")
+        .current_dir(&fixture.work)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("gitleaks failed"));
+}
+
+#[test]
+fn merge_resolution_binary_secrets_are_scanned_by_both_entrypoints() {
+    let fixture = Fixture::new();
+    fixture.run(&["switch", "-q", "-c", "side"]);
+    fixture.commit_file("side.txt", b"side\n", "docs: side");
+    fixture.run(&["switch", "-q", "main"]);
+    fixture.commit_file("main.txt", b"main\n", "docs: main");
+    fixture.run(&["merge", "--no-ff", "--no-commit", "side"]);
+    let key = ["AKIA", "QYLPMN5HHHFPZAM2"].concat();
+    fixture.commit_file(
+        "config.bin",
+        format!("\0aws_access_key_id = {key}\n").as_bytes(),
+        "chore: merge",
+    );
+    fixture.push_blocked(&["origin", "main"], "gitleaks found a secret");
+    let output = Command::new(env!("CARGO_BIN_EXE_publication-guard"))
+        .arg("scan-history")
+        .current_dir(&fixture.work)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+}

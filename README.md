@@ -24,6 +24,9 @@ Hooks do not protect web edits, discussions, other clones or CI-generated pushes
 secret scanning and push protection provide complementary coverage. Secret scanning cannot identify every private
 term or credential, so review all public content before sending it.
 
+CI runs the routine checks and `mise run check:secrets`, which scans all fetched history with enforced Gitleaks defaults
+without loading the private deny-list. Workflows use read-only permissions and do not receive private configuration.
+
 The routine check has a 60-second warm-cache budget. Cold tool installation and compilation are measured separately.
 
 ## Attribution
