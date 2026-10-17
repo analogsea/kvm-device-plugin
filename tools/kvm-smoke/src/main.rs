@@ -1,5 +1,6 @@
-//! `kvm-smoke`: runs a few instructions in a KVM guest and checks what the guest wrote. Exits 0 if the guest ran, 3 if
-//! `/dev/kvm` cannot be opened, 4 if KVM refused to set up the guest, and 1 if the guest did not behave as expected.
+//! `kvm-smoke`: runs a few instructions in a KVM guest and checks what the guest wrote. Exits 0 if the guest ran, 5 if
+//! opening `/dev/kvm` was denied, 3 if it failed otherwise (such as a missing device), 4 if KVM refused to set up the
+//! guest, and 1 if the guest did not behave as expected.
 
 use std::process::ExitCode;
 
@@ -9,9 +10,9 @@ fn main() -> ExitCode {
             println!("kvm-smoke: the guest ran and wrote {:#x}", kvm_smoke::MAGIC);
             ExitCode::SUCCESS
         },
-        Err(Failure::NoKvm(reason)) => {
-            eprintln!("kvm-smoke: cannot use /dev/kvm: {reason}");
-            ExitCode::from(3)
+        Err(Failure::NoKvm(reason, errno)) => {
+            eprintln!("kvm-smoke: cannot open /dev/kvm: {reason}");
+            ExitCode::from(kvm_smoke::open_failure_status(errno))
         },
         Err(Failure::Setup(reason)) => {
             eprintln!("kvm-smoke: cannot set up the guest: {reason}");
@@ -26,14 +27,14 @@ fn main() -> ExitCode {
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum Failure {
-    NoKvm(String),
+    NoKvm(String, Option<i32>),
     Setup(String),
     Guest(String),
 }
 
 #[cfg(not(target_os = "linux"))]
 fn run() -> Result<(), Failure> {
-    Err(Failure::NoKvm("KVM requires Linux".into()))
+    Err(Failure::NoKvm("KVM requires Linux".into(), None))
 }
 
 #[cfg(target_os = "linux")]
@@ -70,6 +71,9 @@ mod linux {
         userspace_addr: u64,
     }
 
+    const _: () =
+        assert!(size_of::<MemoryRegion>() == 32, "SET_USER_MEMORY_REGION encodes 32 bytes");
+
     const ARCH: Arch = if cfg!(target_arch = "aarch64") { Arch::Aarch64 } else { Arch::X86_64 };
 
     pub fn run() -> Result<(), Failure> {
@@ -77,7 +81,7 @@ mod linux {
             .read(true)
             .write(true)
             .open("/dev/kvm")
-            .map_err(|err| Failure::NoKvm(err.to_string()))?;
+            .map_err(|err| Failure::NoKvm(err.to_string(), err.raw_os_error()))?;
         let kvm = kvm.as_raw_fd();
         let guest = |what: &str, err: io::Error| Failure::Setup(format!("{what}: {err}"));
         let version =
@@ -182,6 +186,8 @@ mod linux {
         const GET_SREGS: u32 = 0x8138_ae83;
         const SET_SREGS: u32 = 0x4138_ae84;
 
+        const _: () = assert!(size_of::<[u8; 312]>() == 0x138 && size_of::<[u64; 18]>() == 0x90);
+
         /// Starts the vCPU in real mode at the code: CS's base and selector 0, RIP at the code, RFLAGS' reserved bit.
         pub fn prepare(_vm: RawFd, vcpu: RawFd) -> io::Result<()> {
             // struct kvm_sregs, 312 bytes, begins with CS: u64 base, u32 limit, u16 selector.
@@ -208,6 +214,9 @@ mod linux {
         use kvm_smoke::{ARM64_PC_OFFSET, CODE_ADDRESS, arm64_core_register};
 
         use super::ioctl_with;
+
+        const _: () = assert!(size_of::<VcpuInit>() == 32, "the vCPU init ioctls encode 32 bytes");
+        const _: () = assert!(size_of::<OneReg>() == 16, "SET_ONE_REG encodes 16 bytes");
 
         const ARM_PREFERRED_TARGET: u32 = 0x8020_aeaf;
         const ARM_VCPU_INIT: u32 = 0x4020_aeae;

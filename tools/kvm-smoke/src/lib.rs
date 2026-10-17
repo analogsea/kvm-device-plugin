@@ -1,6 +1,16 @@
 //! The guest program and how to judge its exits. The guest writes 0x2a to a port on x86-64 or to an unbacked address
 //! on arm64, which only a vCPU really executing guest code can do. Linux-only code in `main.rs` runs it.
 
+/// The exit status when `/dev/kvm` cannot be opened: 5 if permission was denied, 3 for anything else, such as a
+/// missing device.
+#[must_use]
+pub fn open_failure_status(errno: Option<i32>) -> u8 {
+    match errno {
+        Some(libc::EACCES | libc::EPERM) => 5,
+        _ => 3,
+    }
+}
+
 /// The value the guest writes.
 pub const MAGIC: u8 = 0x2a;
 /// Where the guest's code is loaded, in guest-physical memory starting at 0.
@@ -189,6 +199,15 @@ mod tests {
         assert!(run(Arch::Aarch64, &[mmio_write(MMIO_ADDRESS, 0x12a)]).is_err());
         assert!(run(Arch::Aarch64, &[mmio_write(MMIO_ADDRESS + 8, u64::from(MAGIC))]).is_err());
         assert!(run(Arch::Aarch64, &[halt]).is_err());
+    }
+
+    #[test]
+    fn permission_failures_are_told_apart_from_missing_devices() {
+        assert_eq!(open_failure_status(Some(libc::EACCES)), 5);
+        assert_eq!(open_failure_status(Some(libc::EPERM)), 5);
+        assert_eq!(open_failure_status(Some(libc::ENOENT)), 3);
+        assert_eq!(open_failure_status(Some(libc::ENXIO)), 3);
+        assert_eq!(open_failure_status(None), 3);
     }
 
     #[test]
