@@ -339,10 +339,14 @@ name = "kvm-device-plugin"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures-util",
  "libc",
  "prost",
+ "tokio",
+ "tokio-util",
  "tonic",
  "tonic-prost",
+ "tracing",
 ]
 
 [[package]]

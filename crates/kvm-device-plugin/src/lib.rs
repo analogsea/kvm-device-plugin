@@ -3,5 +3,8 @@
 
 pub mod config;
 pub mod endpoint;
+pub mod health;
+mod kvm;
+pub mod plugin;
 pub mod pool;
 pub mod proto;
