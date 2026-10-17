@@ -77,11 +77,10 @@ mod linux {
     const ARCH: Arch = if cfg!(target_arch = "aarch64") { Arch::Aarch64 } else { Arch::X86_64 };
 
     pub fn run() -> Result<(), Failure> {
-        let kvm = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/kvm")
-            .map_err(|err| Failure::NoKvm(err.to_string(), err.raw_os_error()))?;
+        let kvm =
+            OpenOptions::new().read(true).write(true).open("/dev/kvm").map_err(|err| {
+                Failure::NoKvm(format!("{err}; {}", identity()), err.raw_os_error())
+            })?;
         let kvm = kvm.as_raw_fd();
         let guest = |what: &str, err: io::Error| Failure::Setup(format!("{what}: {err}"));
         let version =
@@ -139,6 +138,27 @@ mod linux {
             }
         }
         Err(Failure::Guest("the guest did not finish".into()))
+    }
+
+    /// Who this process is and what the device allows, to explain a refused open.
+    fn identity() -> String {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: these calls only read the process's credentials.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let mut groups = vec![0; 64];
+        // SAFETY: the buffer holds as many groups as its length says.
+        let count = unsafe { libc::getgroups(64, groups.as_mut_ptr()) };
+        groups.truncate(usize::try_from(count).unwrap_or(0));
+        let device = match std::fs::metadata("/dev/kvm") {
+            Ok(metadata) => format!(
+                "/dev/kvm is mode {:o}, owner {}:{}",
+                metadata.mode() & 0o7777,
+                metadata.uid(),
+                metadata.gid()
+            ),
+            Err(err) => format!("/dev/kvm: {err}"),
+        };
+        format!("running as {uid}:{gid}, groups {groups:?}; {device}")
     }
 
     fn owned(fd: io::Result<i32>) -> io::Result<OwnedFd> {

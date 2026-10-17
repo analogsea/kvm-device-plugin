@@ -247,7 +247,8 @@ jobs:
 
   # The one check a merge requires, so the requirement survives changes to the matrix. A skipped job would count as
   # passing, so this fails unless every job succeeded, or the rehearsal was skipped because the caller asked.
-  # Acceptance counts only when the caller requires it.
+  # Acceptance counts only when the caller requires it, but this still waits for it, a few minutes, so publishing sees
+  # one result for the whole pipeline.
   ok:
     name: build ok
     if: ${{ !cancelled() }}

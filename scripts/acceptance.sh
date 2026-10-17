@@ -166,6 +166,7 @@ kind create cluster --name "$cluster" --image "$kind_image" --wait 180s
 host_inode=$(stat -c %i /dev/kvm)
 [ "$(node_kvm stat -c %i /dev/kvm)" != "$host_inode" ] || fail "the kind node shares the runner's /dev/kvm"
 note "cgroup filesystem on the node: $(node_kvm stat -fc %T /sys/fs/cgroup)"
+note "the node's /dev/kvm: $(node_kvm stat -c 'mode %a, owner %u:%g' /dev/kvm)"
 skopeo copy "oci-archive:$plugin_archive" "docker-archive:$work/plugin.tar:kvm-device-plugin:acceptance"
 kind load image-archive "$work/plugin.tar" --name "$cluster"
 kind load docker-image kvm-smoke:acceptance --name "$cluster"
@@ -236,11 +237,13 @@ kubectl -n "$namespace" delete pod holder-2 over-cap > /dev/null
 echo "::endgroup::"
 
 echo "::group::4. losing KVM makes the slots unhealthy without disturbing running containers"
+kvm_group=$(node_kvm stat -c %g /dev/kvm)
 node_kvm rm /dev/kvm
 wait_for 40 "no slots allocatable after KVM disappears" allocatable_is 0
 [ -c /dev/kvm ] || fail "removing the node's /dev/kvm removed the runner's"
 [ "$(kubectl -n "$namespace" get pod holder-1 -o 'jsonpath={.status.phase}')" = Running ] || fail "holder-1 stopped"
 node_kvm mknod -m 0666 /dev/kvm c 10 232
+node_kvm chgrp "$kvm_group" /dev/kvm
 wait_for 40 "2 slots allocatable after KVM returns" allocatable_is 2
 expect_same_plugin "$plugin_uid"
 kubectl -n "$namespace" delete pod holder-1 > /dev/null
@@ -250,6 +253,8 @@ echo "::endgroup::"
 echo "::group::5. the device's permissions still apply inside the container"
 node_kvm chmod 0660 /dev/kvm
 group=$(node_kvm stat -c %g /dev/kvm)
+[ "$group" != 0 ] || fail "the node's /dev/kvm belongs to group 0, so the group test would prove nothing"
+note "the node's /dev/kvm belongs to group $group"
 expect_smoke without-group 5
 expect_smoke with-group 0 "    supplementalGroups: [$group]"
 node_kvm chmod 0666 /dev/kvm
@@ -296,14 +301,25 @@ echo "::endgroup::"
 
 echo "::group::8. a new plugin pod can start before the old one stops"
 old_pod=$(plugin_pod metadata.name)
-kubectl -n kube-system logs -f "$old_pod" > "$work/old-plugin.log" 2>&1 &
-kubectl -n kube-system patch daemonset kvm-device-plugin --type merge \
-  -p '{"spec":{"updateStrategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0}}}}'
+(
+  trap - ERR
+  kubectl -n kube-system logs -f --timestamps "$old_pod" > "$work/old-plugin.log" 2>&1 || true
+) &
+# The new pod counts as available only after minReadySeconds, so the old one outlives its registration.
+kubectl -n kube-system patch daemonset kvm-device-plugin --type merge -p \
+  '{"spec":{"minReadySeconds":10,"updateStrategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0}}}}'
 kubectl -n kube-system rollout restart daemonset kvm-device-plugin
 kubectl -n kube-system rollout status daemonset kvm-device-plugin --timeout 180s
 wait_for 60 "2 slots allocatable after a surge rollout" allocatable_is 2
 wait_for 30 "the old plugin stopped" grep -q stopping "$work/old-plugin.log"
-kubectl -n kube-system logs -l app.kubernetes.io/name=kvm-device-plugin | grep -q 'registered'
+new_pod=$(plugin_pod metadata.name)
+[ "$new_pod" != "$old_pod" ] || fail "the rollout kept the old pod"
+registered=$(kubectl -n kube-system logs --timestamps "$new_pod" | grep -m1 'registered .* as' | cut -d' ' -f1)
+stopped=$(grep -m1 stopping "$work/old-plugin.log" | cut -d' ' -f1)
+[ -n "$registered" ] && [ -n "$stopped" ] || fail "missing registration or stop log lines"
+(($(date -d "$registered" +%s%N) < $(date -d "$stopped" +%s%N))) \
+  || fail "the new plugin registered at $registered, after the old one stopped at $stopped"
+note "the new plugin registered at $registered, before the old one stopped at $stopped"
 expect_smoke after-rollout 0
 echo "::endgroup::"
 
