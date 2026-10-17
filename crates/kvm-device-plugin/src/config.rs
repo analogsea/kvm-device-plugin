@@ -91,8 +91,10 @@ impl TryFrom<Cli> for Config {
         if !(1..=MAX_SLOTS).contains(&cli.slots) {
             return Err(ConfigError::Slots(cli.slots));
         }
-        if cli.device_plugin_dir.as_os_str().is_empty() {
-            return Err(ConfigError::EmptyDevicePluginDir);
+        match cli.device_plugin_dir.to_str() {
+            Some("") => return Err(ConfigError::EmptyDevicePluginDir),
+            Some(_) => {},
+            None => return Err(ConfigError::NonUtf8DevicePluginDir),
         }
         let longest = cli.device_plugin_dir.as_os_str().len()
             + 1
@@ -119,6 +121,7 @@ pub enum ConfigError {
     ResourceName { name: String, reason: &'static str },
     Slots(u32),
     EmptyDevicePluginDir,
+    NonUtf8DevicePluginDir,
     SocketPathTooLong { longest: usize, limit: usize },
 }
 
@@ -132,6 +135,7 @@ impl fmt::Display for ConfigError {
                 write!(f, "invalid --slots {slots}: must be between 1 and {MAX_SLOTS}")
             },
             Self::EmptyDevicePluginDir => write!(f, "--device-plugin-dir must not be empty"),
+            Self::NonUtf8DevicePluginDir => write!(f, "--device-plugin-dir must be valid UTF-8"),
             Self::SocketPathTooLong { longest, limit } => write!(
                 f,
                 "plugin socket paths could reach {longest} bytes, over the {limit}-byte Unix socket limit; \
@@ -298,6 +302,10 @@ mod tests {
             Config::try_from(cli(DEFAULT_RESOURCE_NAME, 1, "")),
             Err(ConfigError::EmptyDevicePluginDir)
         ));
+        let mut non_utf8 = cli(DEFAULT_RESOURCE_NAME, 1, "");
+        non_utf8.device_plugin_dir =
+            <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/d\xff").into();
+        assert_eq!(Config::try_from(non_utf8).unwrap_err(), ConfigError::NonUtf8DevicePluginDir);
     }
 
     #[test]

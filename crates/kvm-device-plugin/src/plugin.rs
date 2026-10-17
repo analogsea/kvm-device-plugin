@@ -242,6 +242,7 @@ mod tests {
         }
     }
 
+    // Real time: paused time would reach the monitor's hourly check and pass without the recheck.
     #[tokio::test]
     async fn allocate_refuses_while_unhealthy_and_asks_for_a_recheck() {
         let healthy = Arc::new(AtomicBool::new(false));

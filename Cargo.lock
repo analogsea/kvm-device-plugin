@@ -340,7 +340,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "futures-util",
- "hyper-util",
  "libc",
  "prost",
  "tempfile",
@@ -349,7 +348,6 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-prost",
- "tower",
  "tracing",
  "tracing-subscriber",
 ]

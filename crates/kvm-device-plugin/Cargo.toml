@@ -9,7 +9,6 @@ publish = false
 [dependencies]
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 futures-util = { version = "0.3.34", default-features = false }
-hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 libc = "0.2.191"
 # Keep tonic, tonic-prost and prost in step with tonic-prost-build in tools/proto-gen.
 prost = "0.14.4"
@@ -18,7 +17,6 @@ tokio-stream = { version = "0.1.19", default-features = false, features = ["net"
 tokio-util = { version = "0.7.20", default-features = false }
 tonic = { version = "0.14.6", default-features = false, features = ["codegen", "transport"] }
 tonic-prost = "0.14.6"
-tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 

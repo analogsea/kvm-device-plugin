@@ -47,7 +47,7 @@ impl Probe for KvmProbe {
         let path = self.0.clone();
         let task = tokio::task::spawn_blocking(move || crate::kvm::probe(&path));
         Box::pin(async move {
-            task.await.unwrap_or_else(|_| Health::Unhealthy("the KVM check panicked".into()))
+            task.await.unwrap_or_else(|_| Health::Unhealthy("the KVM check did not finish".into()))
         })
     }
 }

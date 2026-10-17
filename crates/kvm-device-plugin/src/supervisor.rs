@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyper_util::rt::TokioIo;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::UnixListenerStream;
 use tokio_util::sync::CancellationToken;
+use tonic::Request;
 use tonic::transport::{Endpoint, Server};
 
 use crate::config::Config;
@@ -145,24 +145,24 @@ impl Supervisor {
         outcome
     }
 
-    /// Registers the plugin socket `name`. The deadline also bounds kubelet's dial back to the plugin, which it
-    /// makes before answering.
+    /// Registers the plugin socket `name`. The request's deadline reaches kubelet, where it also bounds kubelet's
+    /// dial back to the plugin before answering.
     async fn register(&self, name: &str) -> Result<(), String> {
         let kubelet = self.config.device_plugin_dir.join(KUBELET_SOCKET);
         let deadline = self.config.timing.register_timeout;
-        let request = RegisterRequest {
+        let mut request = Request::new(RegisterRequest {
             version: VERSION.into(),
             endpoint: name.into(),
             resource_name: self.config.resource_name.to_string(),
             options: Some(plugin::options()),
-        };
+        });
+        request.set_timeout(deadline);
+        // The configured directory is UTF-8, so this is lossless.
+        let uri = format!("unix:{}", kubelet.to_string_lossy());
         let attempt = async {
-            let channel = Endpoint::from_static("http://kubelet")
-                .timeout(deadline)
-                .connect_with_connector(tower::service_fn(move |_| {
-                    let kubelet = kubelet.clone();
-                    async move { UnixStream::connect(kubelet).await.map(TokioIo::new) }
-                }))
+            let channel = Endpoint::from_shared(uri)
+                .map_err(|err| format!("invalid kubelet socket path: {err}"))?
+                .connect()
                 .await
                 .map_err(|err| format!("cannot connect to kubelet: {}", chain(&err)))?;
             RegistrationClient::new(channel)
