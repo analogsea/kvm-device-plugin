@@ -12,6 +12,10 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Only release builds need cargo-about.
+  MISE_DISABLE_TOOLS: github:EmbarkStudios/cargo-about
+
 jobs:
   check:
     name: mise run check

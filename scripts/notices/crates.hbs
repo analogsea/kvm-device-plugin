@@ -1,0 +1,13 @@
+## Rust crates
+
+The binary links these crates, grouped by licence.
+{{#each licenses}}
+
+### {{{name}}}
+
+Used by: {{#each used_by}}{{#unless @first}}, {{/unless}}{{crate.name}} {{crate.version}}{{/each}}.
+
+```text
+{{{text}}}
+```
+{{/each}}
