@@ -25,6 +25,10 @@ dump() {
   kubectl -n "$namespace" describe pods || true
   kubectl -n kube-system logs -l app.kubernetes.io/name=kvm-device-plugin --tail=200 --prefix || true
   docker exec "$node" journalctl -u kubelet --since -5m --no-pager | tail -200 || true
+  # What the runtime asked for: the last kvm-smoke container's devices and user.
+  docker exec "$node" sh -c 'crictl inspect "$(crictl ps -a --name kvm-smoke -q | head -1)"' \
+    | jq '.info.runtimeSpec.linux.devices, .info.runtimeSpec.process.user' || true
+  sudo dmesg | grep -iE 'apparmor="DENIED"' | tail -20 || true
   echo "::endgroup::"
 }
 
@@ -142,7 +146,8 @@ expect_same_plugin() {
 }
 
 echo "::group::host"
-# The kind node's /dev is a copy made when it is created, so set the mode first.
+# Lets the runner's own user run kvm-smoke. The kind node's /dev is a separate copy that keeps the device's original
+# mode, which the permission tests below rely on.
 echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
   | sudo tee /etc/udev/rules.d/99-kvm-acceptance.rules > /dev/null
 sudo udevadm control --reload-rules
@@ -203,8 +208,18 @@ kubectl -n kube-system logs -l app.kubernetes.io/name=kvm-device-plugin | grep -
 plugin_uid=$(plugin_pod metadata.uid)
 echo "::endgroup::"
 
-echo "::group::2. an ordinary container runs a guest; without the resource the device cgroup denies it"
+echo "::group::2. the device's permissions apply in an ordinary container, which then runs a guest"
+group=$(node_kvm stat -c %g /dev/kvm)
+[ "$group" != 0 ] || fail "the node's /dev/kvm belongs to group 0, so the group test would prove nothing"
+node_kvm chmod 0660 /dev/kvm
+expect_smoke without-group 5
+expect_smoke with-group 0 "    supplementalGroups: [$group]"
+note "with mode 0660, a non-root container needs the device's group ($group)"
+node_kvm chmod 0666 /dev/kvm
 expect_smoke consumer 0
+echo "::endgroup::"
+
+echo "::group::3. without the resource the device cgroup denies the device"
 kubectl apply -f - > /dev/null <<EOF
 apiVersion: v1
 kind: Pod
@@ -227,7 +242,7 @@ status=$(kubectl get pod control -o 'jsonpath={.status.containerStatuses[0].stat
 note "a container given /dev/kvm without the resource is denied by the device cgroup (exit 6)"
 echo "::endgroup::"
 
-echo "::group::3. slots cap concurrent holders"
+echo "::group::4. slots cap concurrent holders"
 holder holder-1
 holder holder-2
 wait_for 120 "two holders running" both_running holder-1 holder-2
@@ -236,7 +251,7 @@ wait_for 60 "a third consumer to be unschedulable" unschedulable over-cap
 kubectl -n "$namespace" delete pod holder-2 over-cap > /dev/null
 echo "::endgroup::"
 
-echo "::group::4. losing KVM makes the slots unhealthy without disturbing running containers"
+echo "::group::5. losing KVM makes the slots unhealthy without disturbing running containers"
 kvm_group=$(node_kvm stat -c %g /dev/kvm)
 node_kvm rm /dev/kvm
 wait_for 40 "no slots allocatable after KVM disappears" allocatable_is 0
@@ -248,16 +263,6 @@ wait_for 40 "2 slots allocatable after KVM returns" allocatable_is 2
 expect_same_plugin "$plugin_uid"
 kubectl -n "$namespace" delete pod holder-1 > /dev/null
 expect_smoke after-kvm-returns 0
-echo "::endgroup::"
-
-echo "::group::5. the device's permissions still apply inside the container"
-node_kvm chmod 0660 /dev/kvm
-group=$(node_kvm stat -c %g /dev/kvm)
-[ "$group" != 0 ] || fail "the node's /dev/kvm belongs to group 0, so the group test would prove nothing"
-note "the node's /dev/kvm belongs to group $group"
-expect_smoke without-group 5
-expect_smoke with-group 0 "    supplementalGroups: [$group]"
-node_kvm chmod 0666 /dev/kvm
 echo "::endgroup::"
 
 echo "::group::6. without privileged mode the plugin cannot open KVM"
