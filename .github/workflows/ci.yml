@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Only release builds need cargo-about.
-  MISE_DISABLE_TOOLS: github:EmbarkStudios/cargo-about
+  # Only release builds and acceptance need these.
+  MISE_DISABLE_TOOLS: github:EmbarkStudios/cargo-about,aqua:kubernetes-sigs/kind,aqua:kubernetes/kubectl
 
 jobs:
   check:
