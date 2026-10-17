@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.99.0", components = "rustfmt,clippy" }
+rust = { version = "1.99.0", components = "rustfmt,clippy", targets = "x86_64-unknown-linux-musl,aarch64-unknown-linux-musl" }
 "aqua:gitleaks/gitleaks" = "8.30.1"
 "aqua:rvben/rumdl" = "0.2.79"
 "aqua:rhysd/actionlint" = "1.7.12"
@@ -10,11 +10,14 @@ description = "Install the publication guard in this clone"
 run = "git config core.hooksPath .githooks"
 
 [tasks.check]
-description = "Format, lint and test the publication safeguards (warm budget: 60 seconds)"
+description = "Format, lint and test the workspace (warm budget: 60 seconds)"
 run = [
   '[ -n "${CI:-}" ] || [ "$(git config core.hooksPath)" = .githooks ] || { echo "run mise run hooks:install first" >&2; exit 1; }',
   "cargo fmt --all --check",
+  "cargo fmt --manifest-path tools/proto-gen/Cargo.toml --check",
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  "cargo clippy --package kvm-device-plugin --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings",
+  "cargo clippy --package kvm-device-plugin --all-targets --locked --target aarch64-unknown-linux-musl -- -D warnings",
   "cargo test --workspace --locked",
   "rumdl check .",
   "shellcheck .githooks/pre-push",
@@ -24,3 +27,14 @@ run = [
 [tasks."check:secrets"]
 description = "Scan all reachable history with enforced Gitleaks defaults; no private configuration"
 run = "cargo run --quiet --locked --package publication-guard -- scan-history"
+
+[tasks."proto:gen"]
+description = "Regenerate the device-plugin API bindings from the vendored proto"
+run = "cargo run --quiet --locked --manifest-path tools/proto-gen/Cargo.toml"
+
+[tasks."proto:check"]
+description = "Lint the generator and fail if the committed bindings differ from freshly generated ones"
+run = [
+  "cargo clippy --manifest-path tools/proto-gen/Cargo.toml --locked -- -D warnings",
+  "cargo run --quiet --locked --manifest-path tools/proto-gen/Cargo.toml -- --check",
+]
