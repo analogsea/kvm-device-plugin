@@ -1,0 +1,3 @@
+#!/bin/sh
+# Any failure, including a build failure, blocks the push.
+exec mise exec -- cargo run --quiet --locked --package publication-guard -- pre-push "$@"

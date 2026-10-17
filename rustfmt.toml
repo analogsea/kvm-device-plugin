@@ -1,0 +1,6 @@
+style_edition = "2024"
+match_block_trailing_comma = true
+merge_derives = false
+use_small_heuristics = "Max"
+use_field_init_shorthand = true
+max_width = 100

@@ -1,0 +1,12 @@
+[package]
+name = "publication-guard"
+version.workspace = true
+edition.workspace = true
+readme = "README.md"
+publish = false
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,21 @@
+[tools]
+rust = { version = "1.99.0", components = "rustfmt,clippy" }
+"aqua:gitleaks/gitleaks" = "8.30.1"
+"aqua:rvben/rumdl" = "0.2.79"
+"aqua:rhysd/actionlint" = "1.7.12"
+"aqua:koalaman/shellcheck" = "0.11.0"
+
+[tasks."hooks:install"]
+description = "Install the publication guard in this clone"
+run = "git config core.hooksPath .githooks"
+
+[tasks.check]
+description = "Format, lint and test the publication safeguards (warm budget: 60 seconds)"
+run = [
+  '[ -n "${CI:-}" ] || [ "$(git config core.hooksPath)" = .githooks ] || { echo "run mise run hooks:install first" >&2; exit 1; }',
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  "cargo test --workspace --locked",
+  "rumdl check .",
+  "shellcheck .githooks/pre-push",
+]
