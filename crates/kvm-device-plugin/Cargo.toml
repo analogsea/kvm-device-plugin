@@ -1,0 +1,15 @@
+[package]
+name = "kvm-device-plugin"
+description = "A Kubernetes device plugin that exposes /dev/kvm to containers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+libc = "0.2.191"
+# Keep tonic, tonic-prost and prost in step with tonic-prost-build in tools/proto-gen.
+prost = "0.14.4"
+tonic = { version = "0.14.6", default-features = false, features = ["codegen", "transport"] }
+tonic-prost = "0.14.6"

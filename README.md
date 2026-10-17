@@ -1,7 +1,7 @@
 # kvm-device-plugin
 
 A minimal Rust Kubernetes device plugin for `/dev/kvm`, under development.
-The repository currently contains publication safeguards; the runtime plugin is not implemented yet.
+The runtime plugin is not implemented yet.
 
 ## Contributing
 
@@ -33,5 +33,8 @@ The routine check has a 60-second warm-cache budget. Cold tool installation and 
 
 The publication guard and its tests are adapted from [acyclic](https://github.com/iExalt/acyclic), revision
 `9c95cb57bdcd4df002fc7eb426a3f05dacdb6136`, under the MIT license. The existing MIT license preserves its copyright
-notice. The `.gitignore` is GitHub's unmodified
+notice. `proto/deviceplugin/v1beta1/api.proto` is copied unmodified from Kubernetes v1.37.1
+(`staging/src/k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1/api.proto`) under the Apache License 2.0, included as
+`proto/LICENSE`. Its generated bindings are in `crates/kvm-device-plugin/src/proto/v1beta1.rs`; regenerate them with
+`mise run proto:gen`, which CI checks with `mise run proto:check`. The `.gitignore` is GitHub's unmodified
 [Rust template](https://github.com/github/gitignore/blob/main/Rust.gitignore).

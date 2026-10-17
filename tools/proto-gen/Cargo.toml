@@ -1,0 +1,14 @@
+# A separate Cargo root, so routine checks never compile the proto compiler.
+# Keep tonic-prost-build's minor version in step with tonic, tonic-prost and prost in the main workspace.
+[package]
+name = "proto-gen"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+protox = "0.10.0"
+tonic-prost-build = "0.14.6"
