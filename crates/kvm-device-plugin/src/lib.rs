@@ -8,3 +8,4 @@ mod kvm;
 pub mod plugin;
 pub mod pool;
 pub mod proto;
+pub mod supervisor;
