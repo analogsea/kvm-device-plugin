@@ -65,15 +65,17 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - run: cargo build --release --locked -p kvm-device-plugin --target "$TARGET"
-      - name: Check the binary runs here and is static
-        run: |
-          bin="target/$TARGET/release/kvm-device-plugin"
-          "$bin" --version
-          file "$bin" | tee /dev/stderr | grep -q 'static'
-      - name: Package
+      - name: Check the binary is this version, runs here and is static
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked \
             | jq -r '.packages[] | select(.name == "kvm-device-plugin") | .version')
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          bin="target/$TARGET/release/kvm-device-plugin"
+          test "$("$bin" --version)" = "kvm-device-plugin $version"
+          file "$bin" | tee /dev/stderr | grep -q 'static'
+      - name: Package
+        run: |
+          version="$VERSION"
           stage="kvm-device-plugin-$version-$TARGET"
           mkdir -p "dist/$stage"
           cp "target/$TARGET/release/kvm-device-plugin" LICENSE "dist/$stage/"
@@ -107,6 +109,9 @@ jobs:
           path: dist
       - name: Stage the binary and the notices
         run: |
+          archive=$(basename dist/kvm-device-plugin-*.tar.gz)
+          version=${archive#kvm-device-plugin-}
+          echo "VERSION=${version%-"${{ matrix.target }}".tar.gz}" >> "$GITHUB_ENV"
           tar -xzf dist/kvm-device-plugin-*.tar.gz -C dist
           mkdir -p "dist/$ARCH"
           mv dist/kvm-device-plugin-*/kvm-device-plugin "dist/$ARCH/kvm-device-plugin"
@@ -120,7 +125,8 @@ jobs:
           docker buildx build --platform "linux/$ARCH" --provenance=false \
             --output "type=oci,dest=image-$ARCH.tar,rewrite-timestamp=true" --file Containerfile .
           skopeo copy "oci-archive:image-$ARCH.tar" docker-daemon:kvm-device-plugin:test
-          docker run --rm kvm-device-plugin:test --version
+          test "$(docker image inspect --format '{{.Architecture}}' kvm-device-plugin:test)" = "$ARCH"
+          test "$(docker run --rm kvm-device-plugin:test --version)" = "kvm-device-plugin $VERSION"
           if docker run --rm --entrypoint /bin/sh kvm-device-plugin:test -c true; then
             echo "the image must not contain a shell" >&2
             exit 1
@@ -155,6 +161,7 @@ jobs:
         with:
           driver-opts: network=host
       - run: sh scripts/publish-image.sh localhost:5000/kvm-device-plugin rehearsal images --latest --dest-tls-verify=false
+      # This runner is amd64; publish.yml's verify job pulls the published index on both architectures.
       - name: Check the index holds both architectures and runs here
         run: |
           image=localhost:5000/kvm-device-plugin

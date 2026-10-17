@@ -9,4 +9,6 @@ are generated from it. Kubernetes is under the Apache License 2.0, whose text fo
 
 ## Release binaries
 
-The Linux binaries are linked statically against musl, under the MIT License (<https://musl.libc.org>).
+The Linux binaries are linked statically against musl 1.2.5 (<https://musl.libc.org>) and the Rust project's standard
+library (<https://github.com/rust-lang/rust>), both under the MIT License; Rust's is also under the Apache License 2.0.
+Their notices follow the crates' licences below.
