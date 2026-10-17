@@ -34,3 +34,9 @@ Install the hook with `mise run hooks:install`. Never bypass it; if it blocks, f
 It does not load the private deny-list. CI must fetch full history; a shallow checkout only scans the history it has.
 Gitleaks output is captured, and the command reports only success or failure. This does not replace the local
 private-term check, and it cannot prevent a secret from first reaching GitHub; push protection is a separate layer.
+
+## Detection limits
+
+The private-term matcher searches binary additions as text too. Gitleaks uses its built-in secret rules and may skip
+binary content or miss encoded or unknown credential formats; `--text` does not remove those scanner limitations.
+Review binary artifacts and public content manually. Neither scanner guarantees that a clean result is safe to publish.

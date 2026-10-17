@@ -354,7 +354,7 @@ fn scanner_execution_failure_blocks_publication() {
 }
 
 #[test]
-fn merge_resolution_binary_secrets_are_scanned_by_both_entrypoints() {
+fn merge_resolution_secrets_are_scanned_by_both_entrypoints() {
     let fixture = Fixture::new();
     fixture.run(&["switch", "-q", "-c", "side"]);
     fixture.commit_file("side.txt", b"side\n", "docs: side");
@@ -363,8 +363,8 @@ fn merge_resolution_binary_secrets_are_scanned_by_both_entrypoints() {
     fixture.run(&["merge", "--no-ff", "--no-commit", "side"]);
     let key = ["AKIA", "QYLPMN5HHHFPZAM2"].concat();
     fixture.commit_file(
-        "config.bin",
-        format!("\0aws_access_key_id = {key}\n").as_bytes(),
+        "config.env",
+        format!("aws_access_key_id = {key}\n").as_bytes(),
         "chore: merge",
     );
     fixture.push_blocked(&["origin", "main"], "gitleaks found a secret");
