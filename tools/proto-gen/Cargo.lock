@@ -322,6 +322,7 @@ name = "proto-gen"
 version = "0.0.0"
 dependencies = [
  "protox",
+ "tempfile",
  "tonic-prost-build",
 ]
 

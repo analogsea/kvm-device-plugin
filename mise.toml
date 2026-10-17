@@ -14,6 +14,7 @@ description = "Format, lint and test the workspace (warm budget: 60 seconds)"
 run = [
   '[ -n "${CI:-}" ] || [ "$(git config core.hooksPath)" = .githooks ] || { echo "run mise run hooks:install first" >&2; exit 1; }',
   "cargo fmt --all --check",
+  "cargo fmt --manifest-path tools/proto-gen/Cargo.toml --check",
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
   "cargo clippy --package kvm-device-plugin --all-targets --locked --target x86_64-unknown-linux-musl -- -D warnings",
   "cargo clippy --package kvm-device-plugin --all-targets --locked --target aarch64-unknown-linux-musl -- -D warnings",
@@ -32,5 +33,8 @@ description = "Regenerate the device-plugin API bindings from the vendored proto
 run = "cargo run --quiet --locked --manifest-path tools/proto-gen/Cargo.toml"
 
 [tasks."proto:check"]
-description = "Fail if the committed device-plugin API bindings differ from freshly generated ones"
-run = "cargo run --quiet --locked --manifest-path tools/proto-gen/Cargo.toml -- --check"
+description = "Lint the generator and fail if the committed bindings differ from freshly generated ones"
+run = [
+  "cargo clippy --manifest-path tools/proto-gen/Cargo.toml --locked -- -D warnings",
+  "cargo run --quiet --locked --manifest-path tools/proto-gen/Cargo.toml -- --check",
+]

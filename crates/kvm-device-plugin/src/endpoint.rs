@@ -12,26 +12,26 @@ const SUFFIX: &str = ".sock";
 
 /// `<stem>-<nonce as 16 hex digits>-<generation>.sock`
 #[must_use]
-pub fn basename(stem: &str, nonce: u64, generation: u64) -> String {
+pub fn basename(stem: &str, nonce: u64, generation: u32) -> String {
     format!("{stem}-{nonce:016x}-{generation}{SUFFIX}")
 }
 
 /// The longest basename for a stem of `stem_len` bytes.
 #[must_use]
 pub const fn max_basename_len(stem_len: usize) -> usize {
-    stem_len + 1 + NONCE_DIGITS + 1 + u64::MAX.ilog10() as usize + 1 + SUFFIX.len()
+    stem_len + 1 + NONCE_DIGITS + 1 + u32::MAX.ilog10() as usize + 1 + SUFFIX.len()
 }
 
 /// The nonce and generation of a socket `basename` produced for `stem`, or `None` if `name` is anything else.
 #[must_use]
-pub fn parse(stem: &str, name: &str) -> Option<(u64, u64)> {
+pub fn parse(stem: &str, name: &str) -> Option<(u64, u32)> {
     let rest = name.strip_prefix(stem)?.strip_prefix('-')?.strip_suffix(SUFFIX)?;
     let (nonce, generation) = rest.split_once('-')?;
     let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
     if nonce.len() != NONCE_DIGITS || !nonce.bytes().all(lower_hex) {
         return None;
     }
-    let generation_value: u64 = generation.parse().ok()?;
+    let generation_value: u32 = generation.parse().ok()?;
     if generation_value.to_string() != generation {
         return None;
     }
@@ -53,12 +53,12 @@ mod tests {
 
     #[test]
     fn basenames_round_trip() {
-        for (nonce, generation) in [(0, 0), (0xdead_beef, 7), (u64::MAX, u64::MAX)] {
+        for (nonce, generation) in [(0, 0), (0xdead_beef, 7), (u64::MAX, u32::MAX)] {
             let name = basename(STEM, nonce, generation);
             assert!(name.len() <= max_basename_len(STEM.len()));
             assert_eq!(parse(STEM, &name), Some((nonce, generation)), "{name}");
         }
-        assert_eq!(basename(STEM, u64::MAX, u64::MAX).len(), max_basename_len(STEM.len()));
+        assert_eq!(basename(STEM, u64::MAX, u32::MAX).len(), max_basename_len(STEM.len()));
     }
 
     #[test]
@@ -71,6 +71,7 @@ mod tests {
             format!("{STEM}-{nonce}-01.sock"),
             format!("{STEM}-{nonce}-+1.sock"),
             format!("{STEM}-{nonce}-.sock"),
+            format!("{STEM}-{nonce}-4294967296.sock"),
             format!("{STEM}-0123456789ABCDEF-1.sock"),
             format!("{STEM}-0123456789abcde-1.sock"),
             format!("{STEM}x-{nonce}-1.sock"),

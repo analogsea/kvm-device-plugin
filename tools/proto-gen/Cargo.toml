@@ -11,4 +11,5 @@ publish = false
 
 [dependencies]
 protox = "0.10.0"
+tempfile = "3.27.0"
 tonic-prost-build = "0.14.6"

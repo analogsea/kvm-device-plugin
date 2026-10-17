@@ -1,7 +1,6 @@
 //! `proto-gen [--check]`: regenerates the device-plugin API bindings from the vendored proto. Run from the
 //! repository root through `mise run proto:gen` or `mise run proto:check`.
 
-use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::{env, fs};
 
@@ -49,10 +48,10 @@ fn main() -> ExitCode {
 
 /// Compiles the proto and returns the bindings, formatted with the repository's rustfmt settings.
 fn generate() -> Result<String, Box<dyn std::error::Error>> {
-    let out = tempfile_dir()?;
+    let out = tempfile::tempdir()?;
     let descriptors = protox::compile([PROTO], [PROTO_ROOT])?;
-    tonic_prost_build::configure().out_dir(&out).compile_fds(descriptors)?;
-    let path = out.join("v1beta1.rs");
+    tonic_prost_build::configure().out_dir(out.path()).compile_fds(descriptors)?;
+    let path = out.path().join("v1beta1.rs");
     let body = fs::read_to_string(&path)?;
     fs::write(&path, format!("{HEADER}{body}"))?;
     let status = Command::new("rustfmt")
@@ -62,17 +61,5 @@ fn generate() -> Result<String, Box<dyn std::error::Error>> {
     if !status.success() {
         return Err(format!("rustfmt failed: {status}").into());
     }
-    let formatted = fs::read_to_string(&path)?;
-    fs::remove_dir_all(&out)?;
-    Ok(formatted)
-}
-
-/// A fresh private directory for the generator's output, outside the repository.
-fn tempfile_dir() -> std::io::Result<std::path::PathBuf> {
-    let dir = env::temp_dir().join(format!("proto-gen-{}", std::process::id()));
-    if Path::new(&dir).exists() {
-        fs::remove_dir_all(&dir)?;
-    }
-    fs::create_dir(&dir)?;
-    Ok(dir)
+    Ok(fs::read_to_string(&path)?)
 }
