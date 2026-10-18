@@ -6,7 +6,8 @@ name: Publish
 # and never overwrites it, pulls it anonymously on both architectures, and only then un-drafts the release.
 #
 # Every step is safe to repeat: run this again by hand with the tag after a failure. A published release makes a
-# rerun do nothing, and an image a failed run already published is reused, not rebuilt over.
+# rerun do nothing, and an image a failed run already published is reused, not rebuilt over. If three releases finish
+# at once, GitHub cancels one waiting to move `latest`; it stays a draft until rerun, and nothing wrong goes public.
 on:
   push:
     tags: ["v*"]

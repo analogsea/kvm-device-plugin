@@ -50,6 +50,8 @@ expect false sh -c "printf '%s\n' '$tags' | sh '$release' is-latest v0.1.1"
 expect true sh -c "printf '%s\n' '$tags' | sh '$release' is-latest v0.2.0"
 expect true sh -c "printf 'v0.9.0\nv0.10.0\n' | sh '$release' is-latest v0.10.0"
 expect false sh -c "printf 'v0.9.0\nv0.10.0\n' | sh '$release' is-latest v0.9.0"
+expect true sh -c "printf 'v0.1.9\nv0.1.10\n' | sh '$release' is-latest v0.1.10"
+expect true sh -c "printf 'v9.0.0\nv10.0.0\n' | sh '$release' is-latest v10.0.0"
 expect fails sh -c "printf 'v1.0.0-rc.1\n' | sh '$release' is-latest v1.0.0-rc.1"
 
 # Write-once: only a registry that says it does not know the image lets publishing push.
