@@ -11,7 +11,7 @@ management, no CPU or memory policy, no other devices.
 | Implemented | The plugin; a static binary and a minimal image for Linux amd64 and arm64; a DaemonSet; release automation. |
 | Tested | Unit tests, and tests against a fake kubelet over real Unix sockets, run by `mise run check` and CI. |
 | Tested on real KVM, amd64 | Every pull request runs the plugin and its consumers on a disposable [kind](https://kind.sigs.k8s.io/) cluster (Kubernetes v1.37) on a GitHub-hosted runner; releases require it to pass. |
-| Tested on real KVM, arm64 | Not verified: hosted arm64 runners have no KVM. The arm64 image is built and started, but has never run a guest. |
+| Tested on real KVM, arm64 | Partly, once by hand: the CI-built binaries ran a guest, as a non-root user with only the device's group, and the plugin found KVM healthy, on a bare-metal arm64 Linux server with 64 KiB pages. Hosted arm64 runners have no KVM, so CI cannot repeat this, and the plugin has not run under Kubernetes on arm64. |
 | Tested on other clusters | Not yet: only kind. |
 | Released | See [releases](https://github.com/analogsea/kvm-device-plugin/releases). |
 
