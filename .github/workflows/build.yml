@@ -234,7 +234,18 @@ jobs:
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         with:
           driver-opts: network=host
-      - run: sh scripts/publish-image.sh localhost:5000/kvm-device-plugin rehearsal images --latest --dest-tls-verify=false
+      # publish.yml publishes only when the registry says the image is absent; check skopeo's real answers.
+      - name: Publish, telling an absent image from a present one as publish.yml does
+        run: |
+          state() {
+            status=0
+            output=$(skopeo inspect --raw --tls-verify=false docker://localhost:5000/kvm-device-plugin:rehearsal 2>&1) \
+              || status=$?
+            printf '%s\n' "$output" | sh scripts/release.sh image-state "$status"
+          }
+          test "$(state)" = absent
+          sh scripts/publish-image.sh localhost:5000/kvm-device-plugin rehearsal images --latest --dest-tls-verify=false
+          test "$(state)" = present
       # This runner is amd64; publish.yml's verify job pulls the published index on both architectures.
       - name: Check the index holds both architectures and runs here
         run: |

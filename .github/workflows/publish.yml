@@ -1,0 +1,217 @@
+name: Publish
+
+# Publishes a vX.Y.Z tag whose draft release already exists, as release-please creates when its pull request merges.
+# A tag pushed by hand publishes only once someone creates a draft release for it. Publishing builds and tests the
+# tag with real-KVM acceptance required, attaches the archives and SHA256SUMS to the draft, publishes the image once
+# and never overwrites it, pulls it anonymously on both architectures, and only then un-drafts the release.
+#
+# Every step is safe to repeat: run this again by hand with the tag after a failure. A published release makes a
+# rerun do nothing, and an image a failed run already published is reused, not rebuilt over.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The vX.Y.Z tag to publish again
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: publish-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  IMAGE: ghcr.io/analogsea/kvm-device-plugin
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tag is a release of main
+        id: check
+        run: |
+          sh scripts/release.sh check "$TAG"
+          git merge-base --is-ancestor "$TAG^{commit}" origin/main \
+            || { echo "::error::$TAG is not on main"; exit 1; }
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  # Draft releases are visible only with write access, so this job reads the release and runs nothing from the tag.
+  state:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      draft: ${{ steps.state.outputs.draft }}
+    steps:
+      - id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft); then
+            echo "::error::$TAG has no release; create a draft release for it, then run Publish again with the tag"
+            exit 1
+          fi
+          if [ "$draft" != true ]; then
+            echo "::notice::$TAG is already published, so there is nothing to do"
+          fi
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [check, state]
+    if: needs.state.outputs.draft == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      skip-rehearsal: true
+      require-acceptance: true
+
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      reused: ${{ steps.image.outputs.reused }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: images
+      # A draft's assets are not public yet, so replacing those of an earlier failed run is safe; SHA256SUMS always
+      # describes the archives uploaded beside it.
+      - name: Attach the archives and their checksums to the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber -- *.tar.gz SHA256SUMS
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Publish the image unless a previous run already did
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          status=0
+          output=$(skopeo inspect --raw "docker://$IMAGE:$VERSION" 2>&1) || status=$?
+          state=$(printf '%s\n' "$output" | sh scripts/release.sh image-state "$status")
+          if [ "$state" = absent ]; then
+            sh scripts/publish-image.sh "$IMAGE" "$VERSION" images
+            echo "reused=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$IMAGE:$VERSION already exists, so this run reuses it rather than overwrite it"
+            echo "reused=true" >> "$GITHUB_OUTPUT"
+          fi
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | jq -r .)
+          docker buildx imagetools inspect "$IMAGE@$digest" --format '{{json .Manifest}}' \
+            | jq -e '[.manifests[].platform.architecture] | sort == ["amd64", "arm64"]'
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: verify ${{ matrix.arch }}
+    needs: [check, publish]
+    runs-on: ${{ matrix.runner }}
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+    steps:
+      # An empty Docker configuration pulls as anyone would, without this run's credentials.
+      - name: Pull the image anonymously and run it
+        run: |
+          DOCKER_CONFIG=$(mktemp -d)
+          export DOCKER_CONFIG
+          if ! docker pull "$IMAGE@$DIGEST"; then
+            echo "::error::anyone must be able to pull $IMAGE; if the package is private, make it public in its" \
+              "package settings, then run Publish again with $TAG"
+            exit 1
+          fi
+          test "$(docker image inspect --format '{{.Architecture}}' "$IMAGE@$DIGEST")" = "${{ matrix.arch }}"
+          test "$(docker run --rm "$IMAGE@$DIGEST" --version)" = "kvm-device-plugin $VERSION"
+
+  # One at a time across every tag, so two releases finishing together cannot both decide they are the newest.
+  # Only the newest vX.Y.Z tag, published or not, moves `latest`, so a backport never moves it backward.
+  release:
+    needs: [check, publish, verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    concurrency:
+      group: release-latest
+      cancel-in-progress: false
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+      REUSED: ${{ needs.publish.outputs.reused }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The release is un-drafted last, so a failure before it leaves a draft that a rerun finishes.
+      - name: Move latest if this is the newest release, then publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(git tag --list 'v*' | sh scripts/release.sh is-latest "$TAG")
+          if [ "$latest" = true ]; then
+            echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
+          fi
+          {
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | sed '/^<!-- install -->$/,$d'
+            echo '<!-- install -->'
+            echo '## Install'
+            echo
+            echo "The image is \`$IMAGE:$VERSION\`, or by digest:"
+            echo
+            echo '```text'
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            if [ "$REUSED" = true ]; then
+              echo
+              echo 'An earlier build of this tag published the image; the archives come from a later build.'
+            fi
+          } > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md --latest="$latest" --draft=false
