@@ -62,10 +62,11 @@ check delays the exit by at most about 10 seconds.
 
 Allocation asks the container runtime to give the container access to `/dev/kvm` in its device cgroup; a container
 that has the device node but not the resource cannot open it. The node's own policy, not the plugin, sets the device's
-owner, group and mode, and the runtime copies them into the container. A container running as root can open it. With
+owner, group and mode, and the container runtime copies them into the container (containerd does by default; it can
+instead be configured to give the device the pod's user and group). A container running as root can open it. With
 mode `0666`, systemd's default, any user can. With `0660`, a non-root container needs the device's group, whose ID
-varies by distribution, for example through `supplementalGroups`. kind's nodes, for instance, use `0660` with group
-`kvm` as ID 994. Run `stat -c '%a %g' /dev/kvm` on the node to see its policy.
+varies by distribution, for example through `supplementalGroups`. The kind node image in our tests (Kubernetes v1.37),
+for instance, uses `0660` with group `kvm` as ID 994. Run `stat -c '%a %g' /dev/kvm` on the node to see its policy.
 
 Consumers need no privileges. The acceptance tests run them non-root, without capabilities, under the `restricted` Pod
 Security Standard. The plugin itself does need privileged mode: see [known limitations](#known-limitations).
@@ -96,9 +97,10 @@ The node reports 1000 allocatable slots once the plugin has registered and found
 static binary, its license and third-party notices; `SHA256SUMS` lists their checksums.
 
 The DaemonSet replaces one node's plugin at a time and runs in `kube-system` at `system-node-critical` priority.
-Restarting or upgrading the plugin does not disturb containers already using KVM. The plugin also works with
-`maxSurge: 1` and `maxUnavailable: 0`: the new pod registers before the old one stops. The acceptance tests check
-this, but have passed it only on kind, in three consecutive runs, so the default stays conservative.
+Kubernetes keeps the devices it has already given running containers when the plugin restarts or upgrades. The plugin
+also works with `maxSurge: 1`, `maxUnavailable: 0` and `minReadySeconds: 10`: the plugin has no readiness probe, so
+the delay lets the new pod register before the old one stops. The acceptance tests check this, but have passed it
+only on kind, in three consecutive runs, so the default stays conservative.
 
 ## Troubleshooting
 
@@ -132,9 +134,11 @@ SIGINT, 2 for invalid options and 1 if it cannot run.
 - It runs on Linux on amd64 and arm64. Other builds, used only for development, always report KVM as unhealthy.
 - Only one device, the host's `/dev/kvm`, can be shared. Topology hints and preferred allocations are not offered.
 - The plugin must open the node's KVM device to check it. Kubernetes grants a container a host device only through
-  privileged mode, so the plugin runs privileged, with no capabilities and a read-only root filesystem. Unprivileged,
+  privileged mode, so the plugin runs privileged, with a read-only root filesystem. It asks to drop all capabilities,
+which runtimes may ignore for privileged containers. Unprivileged,
   it registers but always reports KVM as unhealthy. Consumers need none of this.
-- A module loaded after the plugin starts is found, but no test covers it: kind cannot load modules.
+- A KVM module loaded after the plugin starts should be found, because the plugin reads the node's `/dev` through a
+  host mount, but no test covers this: kind cannot load modules.
 - Any client that watches the plugin's devices counts as kubelet for detecting a lost connection.
 - The crate's library exists for the binary and its tests and is not a stable API.
 
