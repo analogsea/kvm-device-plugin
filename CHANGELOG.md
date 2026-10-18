@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/analogsea/kvm-device-plugin/compare/v0.1.0...v0.2.0) (2026-10-18)
+
+
+### Features
+
+* drop every capability at startup ([#10](https://github.com/analogsea/kvm-device-plugin/issues/10)) ([d2bab9a](https://github.com/analogsea/kvm-device-plugin/commit/d2bab9a7200681c762ae3cdc36d3bad05e29dd67))
+
 ## 0.1.0 (2026-10-18)
 
 

@@ -31,7 +31,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: kvm-device-plugin
-          image: ghcr.io/analogsea/kvm-device-plugin:0.1.0 # x-release-please-version
+          image: ghcr.io/analogsea/kvm-device-plugin:0.2.0 # x-release-please-version
           args:
             - --kvm-path=/host/dev/kvm
           securityContext:
