@@ -32,8 +32,8 @@ mod linux {
         inheritable: u32,
     }
 
-    /// Empties the calling thread's bounding set if it may, its ambient, inheritable, permitted and effective sets,
-    /// and sets `no_new_privs`, then checks that no capability remains. Without `CAP_SETPCAP` the bounding set stays,
+    /// Empties the calling thread's bounding set if it may, and its inheritable, permitted and effective sets, which
+    /// empties the ambient set too; sets `no_new_privs`; then checks that no capability remains. Without `CAP_SETPCAP` the bounding set stays,
     /// but with nothing permitted and no new privileges it can never be used.
     pub fn drop_capabilities() -> Result<(), String> {
         if holds(CAP_SETPCAP).map_err(|err| format!("cannot read capabilities: {err}"))? {
@@ -48,8 +48,6 @@ mod linux {
                 cap += 1;
             }
         }
-        prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL as _, 0)
-            .map_err(|err| format!("cannot clear the ambient set: {err}"))?;
         capset(&[Data::default(); 2]).map_err(|err| format!("cannot drop capabilities: {err}"))?;
         prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0)
             .map_err(|err| format!("cannot set no_new_privs: {err}"))?;

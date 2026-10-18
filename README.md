@@ -140,9 +140,10 @@ SIGINT, 2 for invalid options and 1 if it cannot run.
 - Only one device, the host's `/dev/kvm`, can be shared. Topology hints and preferred allocations are not offered.
 - The plugin must open the node's KVM device to check it. Kubernetes grants a container a host device only through
   privileged mode, so the plugin runs privileged, as root, with a read-only root filesystem and no seccomp filter.
-  The container runtime gives a privileged container every capability, whatever the DaemonSet asks: containerd 2
-  fills the effective and bounding sets, and CRI-O 1.36 the inheritable and ambient sets too. So the plugin drops
-  every capability itself before it starts any thread, and sets `no_new_privs`; it refuses to start if any remain.
+  The container runtime gives a privileged container every capability, whatever the DaemonSet asks: before the
+  plugin dropped them, we measured full effective and bounding sets under containerd 2, and full inheritable and
+  ambient sets too under CRI-O 1.36. So the plugin drops every capability itself before it starts any thread, and sets
+  `no_new_privs`; it refuses to start if any remain in its effective, permitted or inheritable sets.
   The acceptance tests check every thread. As root it still owns the device, kubelet's socket and the device-plugin
   directory, so it needs none. Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of
   this.

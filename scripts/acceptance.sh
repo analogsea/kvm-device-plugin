@@ -241,7 +241,8 @@ plugin_credentials=$(credentials kvm-device-plugin)
 note "$(node_kvm containerd --version | cut -d' ' -f1-3); the plugin's credentials: $(tr '\t\n' ' ;' <<< "$plugin_credentials")"
 [ "$(field Uid "$plugin_credentials")" = 0 ] || fail "the plugin does not run as root"
 plugin_pid=$(container_pid kvm-device-plugin)
-plugin_threads=$(node_kvm sh -c "grep -HE '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/$plugin_pid/task/*/status")
+# Idle blocking threads come and go, so one may vanish between the glob and grep.
+plugin_threads=$(node_kvm sh -c "grep -sHE '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/$plugin_pid/task/*/status || true")
 grep -q NoNewPrivs <<< "$plugin_threads" || fail "cannot read the plugin's threads"
 ! grep -vE ':(Cap(Inh|Prm|Eff|Bnd|Amb):[[:space:]]+0{16}|NoNewPrivs:[[:space:]]+1)$' <<< "$plugin_threads" \
   || fail "a plugin thread holds capabilities or may gain privileges"
