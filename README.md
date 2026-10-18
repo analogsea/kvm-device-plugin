@@ -11,7 +11,7 @@ management, no CPU or memory policy, no other devices.
 | Implemented | The plugin; a static binary and a minimal image for Linux amd64 and arm64; a DaemonSet; release automation. |
 | Tested | Unit tests, and tests against a fake kubelet over real Unix sockets, run by `mise run check` and CI. |
 | Tested on real KVM, amd64 | Every pull request runs the plugin and its consumers on a disposable [kind](https://kind.sigs.k8s.io/) cluster (Kubernetes v1.37) on a GitHub-hosted runner; releases require it to pass. |
-| Tested on real KVM, arm64 | Not verified: hosted arm64 runners have no KVM. The arm64 image is built and started, but has never run a guest. |
+| Tested on real KVM, arm64 | Partly, once by hand: the CI-built binaries ran a guest, as a non-root user with only the device's group, and the plugin found KVM healthy, on a bare-metal arm64 Linux server with 64 KiB pages. Hosted arm64 runners have no KVM, so CI cannot repeat this, and the plugin has not run under Kubernetes on arm64. |
 | Tested on other clusters | Not yet: only kind. |
 | Released | See [releases](https://github.com/analogsea/kvm-device-plugin/releases). |
 
@@ -68,8 +68,9 @@ mode `0666`, systemd's default, any user can. With `0660`, a non-root container 
 varies by distribution, for example through `supplementalGroups`. The kind node image in our tests (Kubernetes v1.37),
 for instance, uses `0660` with group `kvm` as ID 994. Run `stat -c '%a %g' /dev/kvm` on the node to see its policy.
 
-Consumers need no privileges. The acceptance tests run them non-root, without capabilities, under the `restricted` Pod
-Security Standard. The plugin itself does need privileged mode: see [known limitations](#known-limitations).
+Consumers need no privileges. The acceptance tests run them non-root under the `restricted` Pod Security Standard, and
+check that they hold no capabilities. The plugin itself does need privileged mode: see
+[known limitations](#known-limitations).
 
 ## Install
 
@@ -97,7 +98,9 @@ The node reports 1000 allocatable slots once the plugin has registered and found
 static binary, its license and third-party notices; `SHA256SUMS` lists their checksums.
 
 The DaemonSet replaces one node's plugin at a time and runs in `kube-system` at `system-node-critical` priority.
-Kubernetes keeps the devices it has already given running containers when the plugin restarts or upgrades. The plugin
+Kubernetes keeps the devices it has already given running containers when the plugin restarts or upgrades. The
+acceptance tests check this with a container that opens `/dev/kvm` and runs a new guest every second, without
+interruption, through a kubelet restart and a rollout of the plugin. The plugin
 also works with `maxSurge: 1`, `maxUnavailable: 0` and `minReadySeconds: 10`: the plugin has no readiness probe, so
 the delay lets the new pod register before the old one stops. The acceptance tests check this, but have passed it
 only on kind, in three consecutive runs, so the default stays conservative.
@@ -134,9 +137,10 @@ SIGINT, 2 for invalid options and 1 if it cannot run.
 - It runs on Linux on amd64 and arm64. Other builds, used only for development, always report KVM as unhealthy.
 - Only one device, the host's `/dev/kvm`, can be shared. Topology hints and preferred allocations are not offered.
 - The plugin must open the node's KVM device to check it. Kubernetes grants a container a host device only through
-  privileged mode, so the plugin runs privileged, with a read-only root filesystem. It asks to drop all capabilities,
-which runtimes may ignore for privileged containers. Unprivileged,
-  it registers but always reports KVM as unhealthy. Consumers need none of this.
+  privileged mode, so the plugin runs privileged, as root, with a read-only root filesystem. The DaemonSet asks to drop
+  all capabilities, but containerd gives a privileged container every capability regardless: the acceptance tests
+  measure the plugin's effective and bounding sets as the kernel's full set, under containerd 2. The plugin needs none
+  of them. Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of this.
 - A KVM module loaded after the plugin starts should be found, because the plugin reads the node's `/dev` through a
   host mount, but no test covers this: kind cannot load modules.
 - Any client that watches the plugin's devices counts as kubelet for detecting a lost connection.
