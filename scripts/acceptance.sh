@@ -17,6 +17,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 
 note() { echo "$*"; echo "- $*" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; }
+# Matches text already captured: grep -q reading a pipe could stop its writer early, which pipefail counts as failure.
+contains() { grep -q -- "$1" <<< "$2"; }
 
 dump() {
   echo "::group::cluster state"
@@ -137,7 +139,7 @@ expect_smoke() {
     fail "$name exited $actual, expected $status"
   fi
   if [ "$status" = 0 ]; then
-    kubectl -n "$namespace" logs "$name" | grep -q 'the guest ran and wrote 0x2a'
+    contains 'the guest ran and wrote 0x2a' "$(kubectl -n "$namespace" logs "$name")"
   fi
   kubectl -n "$namespace" delete pod "$name" --wait=false > /dev/null
   note "$name exited $status as expected"
@@ -158,7 +160,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --name-match=kvm
 wait_for 10 "the runner's /dev/kvm is mode 0666" test "$(stat -c %a /dev/kvm)" = 666
 chmod +x "$smoke_binary"
-"$smoke_binary" | grep -q 'the guest ran and wrote 0x2a'
+contains 'the guest ran and wrote 0x2a' "$("$smoke_binary")"
 note "kvm-smoke ran a guest on the runner"
 mkdir "$work/smoke"
 cp "$smoke_binary" "$work/smoke/kvm-smoke"
@@ -209,7 +211,7 @@ echo "::endgroup::"
 
 echo "::group::1. the plugin registers and finds KVM through the node's /dev"
 wait_for 120 "2 slots allocatable" allocatable_is 2
-plugin_log | grep -q 'KVM is healthy'
+contains 'KVM is healthy' "$(plugin_log)"
 plugin_uid=$(plugin_pod metadata.uid)
 echo "::endgroup::"
 
@@ -295,7 +297,7 @@ EOF
 kubectl apply -k "$work/unprivileged"
 wait_for 120 "the unprivileged plugin registers 2 slots" capacity_is 2 example.com/kvm-unprivileged
 allocatable_is 0 example.com/kvm-unprivileged || fail "the unprivileged plugin's slots are allocatable"
-kubectl -n kube-system logs daemonset/kvm-device-plugin-unprivileged | grep -q 'Operation not permitted'
+contains 'Operation not permitted' "$(kubectl -n kube-system logs daemonset/kvm-device-plugin-unprivileged)"
 note "without privileged mode, the plugin registers but KVM is unhealthy: Operation not permitted"
 kubectl -n kube-system delete daemonset kvm-device-plugin-unprivileged --wait=true > /dev/null
 echo "::endgroup::"
@@ -305,7 +307,7 @@ before=$(registrations)
 node_kvm systemctl restart kubelet
 # The node's status is stale until kubelet is back, so wait for the plugin's fresh registration first.
 wait_for 60 "the plugin registers again after kubelet restarts" registered_more_than "$before"
-plugin_log | grep -q 'registering again'
+contains 'registering again' "$(plugin_log)"
 wait_for 120 "the node is ready after kubelet restarts" node_ready
 wait_for 60 "2 slots allocatable after kubelet restarts" allocatable_is 2
 expect_same_plugin "$plugin_uid"
@@ -325,9 +327,14 @@ kubectl -n kube-system rollout restart daemonset kvm-device-plugin
 kubectl -n kube-system rollout status daemonset kvm-device-plugin --timeout 180s
 wait_for 60 "2 slots allocatable after a surge rollout" allocatable_is 2
 wait_for 30 "the old plugin stopped" grep -q stopping "$work/old-plugin.log"
-new_pod=$(plugin_pod metadata.name)
-[ "$new_pod" != "$old_pod" ] || fail "the rollout kept the old pod"
-registered=$(kubectl -n kube-system logs --timestamps "$new_pod" | grep -m1 'registered .* as' | cut -d' ' -f1)
+# The old pod can still be terminating, so find the other one.
+new_pod=""
+for pod in $(kubectl -n kube-system get pods -l app.kubernetes.io/name=kvm-device-plugin -o 'jsonpath={.items[*].metadata.name}'); do
+  [ "$pod" = "$old_pod" ] || new_pod=$pod
+done
+[ -n "$new_pod" ] || fail "the rollout kept the old pod"
+kubectl -n kube-system logs --timestamps "$new_pod" > "$work/new-plugin.log"
+registered=$(grep -m1 'registered .* as' "$work/new-plugin.log" | cut -d' ' -f1)
 stopped=$(grep -m1 stopping "$work/old-plugin.log" | cut -d' ' -f1)
 [ -n "$registered" ] && [ -n "$stopped" ] || fail "missing registration or stop log lines"
 (($(date -d "$registered" +%s%N) < $(date -d "$stopped" +%s%N))) \
