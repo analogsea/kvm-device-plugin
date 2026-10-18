@@ -71,9 +71,10 @@ plugin_log() { kubectl -n kube-system logs "$(plugin_pod metadata.name)"; }
 registrations() { plugin_log | grep -c 'registered .* as' || true; }
 registered_more_than() { [ "$(registrations)" -gt "$1" ]; }
 
-# Starts a Pod in $namespace that runs kvm-smoke with the resource. Extra lines are added to the pod's spec.
+# Starts a Pod in $namespace that runs kvm-smoke with the resource. Extra lines are added to the pod's spec, and
+# the third argument is kvm-smoke's arguments, as a YAML list.
 consumer() {
-  local name=$1 extra_spec=${2:-}
+  local name=$1 extra_spec=${2:-} args=${3:-[]}
   kubectl -n "$namespace" apply -f - > /dev/null <<EOF
 apiVersion: v1
 kind: Pod
@@ -91,12 +92,34 @@ $extra_spec
     - name: kvm-smoke
       image: kvm-smoke:acceptance
       imagePullPolicy: Never
+      args: $args
       securityContext:
         allowPrivilegeEscalation: false
         capabilities: {drop: [ALL]}
       resources:
         limits: {$resource: 1}
 EOF
+}
+
+# A running container's credentials, read on the node, where crictl's PID is meaningful. $1 is the container's name.
+credentials() {
+  local pid
+  pid=$(node_kvm crictl inspect "$(node_kvm crictl ps --name "^$1\$" -q)" | jq -r .info.pid)
+  node_kvm grep -E '^(Uid|CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp):' "/proc/$pid/status"
+}
+# One field of credentials' output, given as $2.
+field() { awk -v name="$1:" '$1 == name { print $2 }' <<< "$2"; }
+
+# The guest loop that runs through sections 7 and 8: how many guests it has run, and a check that the same pod is
+# still running and runs another guest after the disruption $1, counted from when this check starts.
+guest_runs() { grep -c 'the guest ran' <<< "$(kubectl -n "$namespace" logs runner)" || true; }
+runs_more_than() { [ "$(guest_runs)" -gt "$1" ]; }
+expect_runner_undisturbed() {
+  local runs
+  [ "$(kubectl -n "$namespace" get pod runner -o 'jsonpath={.metadata.uid} {.status.phase}')" = "$runner_uid Running" ] \
+    || { kubectl -n "$namespace" logs runner | tail -5 || true; fail "the running guest loop stopped $1"; }
+  runs=$(guest_runs)
+  wait_for 10 "the running guest loop runs a new guest $1, guest number $((runs + 1))," runs_more_than "$runs"
 }
 
 # Starts a Pod that holds one unit of the resource until deleted.
@@ -213,6 +236,15 @@ echo "::group::1. the plugin registers and finds KVM through the node's /dev"
 wait_for 120 "2 slots allocatable" allocatable_is 2
 contains 'KVM is healthy' "$(plugin_log)"
 plugin_uid=$(plugin_pod metadata.uid)
+# What the privileged plugin really holds, which the README states for containerd.
+plugin_credentials=$(credentials kvm-device-plugin)
+note "$(node_kvm containerd --version | cut -d' ' -f1-3); the plugin's credentials: $(tr '\t\n' ' ;' <<< "$plugin_credentials")"
+[ "$(field Uid "$plugin_credentials")" = 0 ] || fail "the plugin does not run as root"
+# The kind node is itself a privileged container, so its init holds every capability the kernel has.
+all_capabilities=$(field CapBnd "$(node_kvm grep '^CapBnd:' /proc/1/status)")
+[ "$(field CapEff "$plugin_credentials")" = "$all_capabilities" ] \
+  && [ "$(field CapBnd "$plugin_credentials")" = "$all_capabilities" ] \
+  || fail "the plugin does not hold every capability ($all_capabilities), so the README is out of date"
 echo "::endgroup::"
 
 echo "::group::2. the device's permissions apply in an ordinary container, which then runs a guest"
@@ -302,7 +334,14 @@ note "without privileged mode, the plugin registers but KVM is unhealthy: Operat
 kubectl -n kube-system delete daemonset kvm-device-plugin-unprivileged --wait=true > /dev/null
 echo "::endgroup::"
 
-echo "::group::7. the plugin re-registers when kubelet restarts"
+echo "::group::7. the plugin re-registers when kubelet restarts, and a running guest loop is undisturbed"
+# Runs a guest every second, opening /dev/kvm each time, through this section and the next; any failure ends it.
+consumer runner "" '["--every", "1"]'
+wait_for 60 "the running guest loop's first guest" runs_more_than 0
+runner_uid=$(kubectl -n "$namespace" get pod runner -o 'jsonpath={.metadata.uid}')
+runner_credentials=$(credentials kvm-smoke)
+note "a consumer's credentials: $(tr '\t\n' ' ;' <<< "$runner_credentials")"
+[ "$(field CapEff "$runner_credentials")" = 0000000000000000 ] || fail "a consumer holds capabilities"
 before=$(registrations)
 node_kvm systemctl restart kubelet
 # The node's status is stale until kubelet is back, so wait for the plugin's fresh registration first.
@@ -311,10 +350,11 @@ contains 'registering again' "$(plugin_log)"
 wait_for 120 "the node is ready after kubelet restarts" node_ready
 wait_for 60 "2 slots allocatable after kubelet restarts" allocatable_is 2
 expect_same_plugin "$plugin_uid"
+expect_runner_undisturbed "after kubelet restarts"
 expect_smoke after-kubelet-restart 0
 echo "::endgroup::"
 
-echo "::group::8. a new plugin pod can start before the old one stops"
+echo "::group::8. a new plugin pod can start before the old one stops, and a running guest loop is undisturbed"
 old_pod=$(plugin_pod metadata.name)
 (
   trap - ERR
@@ -340,6 +380,9 @@ stopped=$(grep -m1 stopping "$work/old-plugin.log" | cut -d' ' -f1)
 (($(date -d "$registered" +%s%N) < $(date -d "$stopped" +%s%N))) \
   || fail "the new plugin registered at $registered, after the old one stopped at $stopped"
 note "the new plugin registered at $registered, before the old one stopped at $stopped"
+expect_runner_undisturbed "after a rollout"
+note "the running guest loop ran $(guest_runs) guests, each opening /dev/kvm, through a kubelet restart and a rollout"
+kubectl -n "$namespace" delete pod runner --wait=false > /dev/null
 expect_smoke after-rollout 0
 echo "::endgroup::"
 

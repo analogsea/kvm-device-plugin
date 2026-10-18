@@ -1,26 +1,48 @@
 //! `kvm-smoke`: runs a few instructions in a KVM guest and checks what the guest wrote. Exits 0 if the guest ran; 5 or
 //! 6 if the device's permissions or the device cgroup denied opening `/dev/kvm`; 3 if opening failed otherwise, such
-//! as for a missing device; 4 if KVM refused to set up the guest; and 1 if the guest did not behave as expected.
+//! as for a missing device; 4 if KVM refused to set up the guest; 1 if the guest did not behave as expected; and 2 for
+//! invalid arguments. With `--every SECONDS` it runs a new guest, opening `/dev/kvm` again, every `SECONDS` until one
+//! fails, and then exits with that run's status.
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let every = match kvm_smoke::interval(&args) {
+        Ok(every) => every,
+        Err(message) => {
+            eprintln!("kvm-smoke: {message}");
+            return ExitCode::from(2);
+        },
+    };
+    loop {
+        if let Err(status) = once() {
+            return status;
+        }
+        match every {
+            Some(every) => std::thread::sleep(every),
+            None => return ExitCode::SUCCESS,
+        }
+    }
+}
+
+fn once() -> Result<(), ExitCode> {
     match run() {
         Ok(()) => {
             println!("kvm-smoke: the guest ran and wrote {:#x}", kvm_smoke::MAGIC);
-            ExitCode::SUCCESS
+            Ok(())
         },
         Err(Failure::NoKvm(reason, errno)) => {
             eprintln!("kvm-smoke: cannot open /dev/kvm: {reason}");
-            ExitCode::from(kvm_smoke::open_failure_status(errno))
+            Err(ExitCode::from(kvm_smoke::open_failure_status(errno)))
         },
         Err(Failure::Setup(reason)) => {
             eprintln!("kvm-smoke: cannot set up the guest: {reason}");
-            ExitCode::from(4)
+            Err(ExitCode::from(4))
         },
         Err(Failure::Guest(reason)) => {
             eprintln!("kvm-smoke: the guest did not run as expected: {reason}");
-            ExitCode::FAILURE
+            Err(ExitCode::FAILURE)
         },
     }
 }
@@ -94,20 +116,29 @@ mod linux {
         };
         let vm = owned(ioctl(kvm, CREATE_VM, vm_type as usize))
             .map_err(|e| guest("KVM_CREATE_VM", e))?;
+        if ARCH == Arch::Aarch64 {
+            println!(
+                "kvm-smoke: created the VM with IPA size {vm_type} (0 is the default, 40 bits)"
+            );
+        }
 
         let memory = map(None, MEMORY_SIZE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS)
             .map_err(|e| guest("allocating guest memory", e))?;
         let code = guest_code(ARCH);
         // SAFETY: the mapping is MEMORY_SIZE bytes, far more than CODE_ADDRESS plus the code's length.
         unsafe {
-            ptr::copy_nonoverlapping(code.as_ptr(), memory.add(CODE_ADDRESS as usize), code.len())
+            ptr::copy_nonoverlapping(
+                code.as_ptr(),
+                memory.address.add(CODE_ADDRESS as usize),
+                code.len(),
+            )
         };
         let mut region = MemoryRegion {
             slot: 0,
             flags: 0,
             guest_phys_addr: 0,
             memory_size: MEMORY_SIZE as u64,
-            userspace_addr: memory as u64,
+            userspace_addr: memory.address as u64,
         };
         ioctl_with(vm.as_raw_fd(), SET_USER_MEMORY_REGION, &mut region)
             .map_err(|e| guest("KVM_SET_USER_MEMORY_REGION", e))?;
@@ -131,7 +162,7 @@ mod linux {
                 Err(err) => return Err(guest("KVM_RUN", err)),
             }
             // SAFETY: the kernel keeps run_size bytes mapped at run_area while the vCPU exists.
-            let area = unsafe { std::slice::from_raw_parts(run_area, run_size) };
+            let area = unsafe { std::slice::from_raw_parts(run_area.address, run_size) };
             match judge(ARCH, &mut wrote, &decode(area)).map_err(Failure::Guest)? {
                 Verdict::Ran => return Ok(()),
                 Verdict::Continue => {},
@@ -166,15 +197,28 @@ mod linux {
         fd.map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
-    fn map(fd: Option<RawFd>, len: usize, flags: i32) -> io::Result<*mut u8> {
+    /// Memory mapped for one run, unmapped when dropped so that repeated runs don't accumulate it.
+    struct Mapping {
+        address: *mut u8,
+        len: usize,
+    }
+
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            // SAFETY: the mapping came from mmap with this length, and nothing uses it after the run that owns it.
+            unsafe { libc::munmap(self.address.cast(), self.len) };
+        }
+    }
+
+    fn map(fd: Option<RawFd>, len: usize, flags: i32) -> io::Result<Mapping> {
         let protection = libc::PROT_READ | libc::PROT_WRITE;
-        // SAFETY: a fresh mapping that aliases nothing; it lives until the process exits.
+        // SAFETY: a fresh mapping that aliases nothing.
         let address =
             unsafe { libc::mmap(ptr::null_mut(), len, protection, flags, fd.unwrap_or(-1), 0) };
         if address == libc::MAP_FAILED {
             Err(io::Error::last_os_error())
         } else {
-            Ok(address.cast())
+            Ok(Mapping { address: address.cast(), len })
         }
     }
 

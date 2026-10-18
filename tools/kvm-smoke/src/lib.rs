@@ -12,6 +12,18 @@ pub fn open_failure_status(errno: Option<i32>) -> u8 {
     }
 }
 
+/// How often to run a guest: once with no arguments, or forever every `SECONDS` with `--every SECONDS`.
+pub fn interval(args: &[String]) -> Result<Option<std::time::Duration>, String> {
+    match args {
+        [] => Ok(None),
+        [flag, seconds] if flag == "--every" => match seconds.parse::<u64>() {
+            Ok(seconds @ 1..=3600) => Ok(Some(std::time::Duration::from_secs(seconds))),
+            _ => Err(format!("--every takes 1 to 3600 seconds, not {seconds:?}")),
+        },
+        _ => Err("usage: kvm-smoke [--every SECONDS]".into()),
+    }
+}
+
 /// The value the guest writes.
 pub const MAGIC: u8 = 0x2a;
 /// Where the guest's code is loaded, in guest-physical memory starting at 0.
@@ -209,6 +221,22 @@ mod tests {
         assert_eq!(open_failure_status(Some(libc::ENOENT)), 3);
         assert_eq!(open_failure_status(Some(libc::ENXIO)), 3);
         assert_eq!(open_failure_status(None), 3);
+    }
+
+    #[test]
+    fn runs_once_or_every_whole_number_of_seconds() {
+        let args = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(interval(&args(&[])), Ok(None));
+        assert_eq!(interval(&args(&["--every", "1"])), Ok(Some(std::time::Duration::from_secs(1))));
+        assert_eq!(
+            interval(&args(&["--every", "3600"])),
+            Ok(Some(std::time::Duration::from_secs(3600)))
+        );
+        for bad in
+            [&["--every", "0"][..], &["--every", "3601"], &["--every", "1.5"], &["--every"], &["1"]]
+        {
+            assert!(interval(&args(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
