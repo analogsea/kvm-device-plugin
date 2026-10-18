@@ -7,5 +7,6 @@ pub mod health;
 mod kvm;
 pub mod plugin;
 pub mod pool;
+pub mod privileges;
 pub mod proto;
 pub mod supervisor;
