@@ -1,0 +1,31 @@
+name: Release Please
+
+# Keeps a release pull request open with the next version and changelog. Merging it tags the version and creates a
+# draft release, which publish.yml builds, tests, publishes and then un-drafts. It acts as a GitHub App rather than
+# with GITHUB_TOKEN, because pull requests and tags that GITHUB_TOKEN creates start no workflows: without the App, the
+# release pull request would get no checks and the tag would not start publishing.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          client-id: ${{ secrets.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app.outputs.token }}

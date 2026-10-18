@@ -26,6 +26,7 @@ run = [
   "cargo test --workspace --locked",
   "rumdl check .",
   "shellcheck .githooks/pre-push scripts/*.sh",
+  "sh scripts/release-test.sh",
   "actionlint",
 ]
 
