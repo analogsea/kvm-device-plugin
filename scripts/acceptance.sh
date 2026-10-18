@@ -64,6 +64,10 @@ unschedulable() {
 plugin_pod() { kubectl -n kube-system get pods -l app.kubernetes.io/name=kvm-device-plugin -o "jsonpath={.items[0].$1}"; }
 node_ready() { [ "$(kubectl get node "$node" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}')" = True ]; }
 node_kvm() { docker exec "$node" "$@"; }
+# The plugin pod's whole log; `kubectl logs -l` would show only its last lines.
+plugin_log() { kubectl -n kube-system logs "$(plugin_pod metadata.name)"; }
+registrations() { plugin_log | grep -c 'registered .* as' || true; }
+registered_more_than() { [ "$(registrations)" -gt "$1" ]; }
 
 # Starts a Pod in $namespace that runs kvm-smoke with the resource. Extra lines are added to the pod's spec.
 consumer() {
@@ -172,6 +176,7 @@ host_inode=$(stat -c %i /dev/kvm)
 [ "$(node_kvm stat -c %i /dev/kvm)" != "$host_inode" ] || fail "the kind node shares the runner's /dev/kvm"
 note "cgroup filesystem on the node: $(node_kvm stat -fc %T /sys/fs/cgroup)"
 note "the node's /dev/kvm: $(node_kvm stat -c 'mode %a, owner %u:%g' /dev/kvm)"
+note "the kvm group: on the runner $(getent group kvm || echo none), on the node $(node_kvm getent group kvm || echo none)"
 skopeo copy "oci-archive:$plugin_archive" "docker-archive:$work/plugin.tar:kvm-device-plugin:acceptance"
 kind load image-archive "$work/plugin.tar" --name "$cluster"
 kind load docker-image kvm-smoke:acceptance --name "$cluster"
@@ -204,7 +209,7 @@ echo "::endgroup::"
 
 echo "::group::1. the plugin registers and finds KVM through the node's /dev"
 wait_for 120 "2 slots allocatable" allocatable_is 2
-kubectl -n kube-system logs -l app.kubernetes.io/name=kvm-device-plugin | grep -q 'KVM is healthy'
+plugin_log | grep -q 'KVM is healthy'
 plugin_uid=$(plugin_pod metadata.uid)
 echo "::endgroup::"
 
@@ -296,11 +301,14 @@ kubectl -n kube-system delete daemonset kvm-device-plugin-unprivileged --wait=tr
 echo "::endgroup::"
 
 echo "::group::7. the plugin re-registers when kubelet restarts"
+before=$(registrations)
 node_kvm systemctl restart kubelet
+# The node's status is stale until kubelet is back, so wait for the plugin's fresh registration first.
+wait_for 60 "the plugin registers again after kubelet restarts" registered_more_than "$before"
+plugin_log | grep -q 'registering again'
 wait_for 120 "the node is ready after kubelet restarts" node_ready
 wait_for 60 "2 slots allocatable after kubelet restarts" allocatable_is 2
 expect_same_plugin "$plugin_uid"
-kubectl -n kube-system logs -l app.kubernetes.io/name=kvm-device-plugin | grep -q 'registering again'
 expect_smoke after-kubelet-restart 0
 echo "::endgroup::"
 
