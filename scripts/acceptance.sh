@@ -102,10 +102,9 @@ EOF
 }
 
 # A running container's credentials, read on the node, where crictl's PID is meaningful. $1 is the container's name.
+container_pid() { node_kvm crictl inspect "$(node_kvm crictl ps --name "^$1\$" -q)" | jq -r .info.pid; }
 credentials() {
-  local pid
-  pid=$(node_kvm crictl inspect "$(node_kvm crictl ps --name "^$1\$" -q)" | jq -r .info.pid)
-  node_kvm grep -E '^(Uid|CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp):' "/proc/$pid/status"
+  node_kvm grep -E '^(Uid|CapInh|CapPrm|CapEff|CapBnd|CapAmb|NoNewPrivs|Seccomp):' "/proc/$(container_pid "$1")/status"
 }
 # One field of credentials' output, given as $2.
 field() { awk -v name="$1:" '$1 == name { print $2 }' <<< "$2"; }
@@ -236,15 +235,16 @@ echo "::group::1. the plugin registers and finds KVM through the node's /dev"
 wait_for 120 "2 slots allocatable" allocatable_is 2
 contains 'KVM is healthy' "$(plugin_log)"
 plugin_uid=$(plugin_pod metadata.uid)
-# What the privileged plugin really holds, which the README states for containerd.
+# The runtime gives the privileged plugin every capability; it must have dropped them all, in every thread, and be
+# unable to gain them again.
 plugin_credentials=$(credentials kvm-device-plugin)
 note "$(node_kvm containerd --version | cut -d' ' -f1-3); the plugin's credentials: $(tr '\t\n' ' ;' <<< "$plugin_credentials")"
 [ "$(field Uid "$plugin_credentials")" = 0 ] || fail "the plugin does not run as root"
-# The kind node is itself a privileged container, so its init holds every capability the kernel has.
-all_capabilities=$(field CapBnd "$(node_kvm grep '^CapBnd:' /proc/1/status)")
-[ "$(field CapEff "$plugin_credentials")" = "$all_capabilities" ] \
-  && [ "$(field CapBnd "$plugin_credentials")" = "$all_capabilities" ] \
-  || fail "the plugin does not hold every capability ($all_capabilities), so the README is out of date"
+plugin_pid=$(container_pid kvm-device-plugin)
+plugin_threads=$(node_kvm sh -c "grep -HE '^(Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):' /proc/$plugin_pid/task/*/status")
+grep -q NoNewPrivs <<< "$plugin_threads" || fail "cannot read the plugin's threads"
+! grep -vE ':(Cap(Inh|Prm|Eff|Bnd|Amb):[[:space:]]+0{16}|NoNewPrivs:[[:space:]]+1)$' <<< "$plugin_threads" \
+  || fail "a plugin thread holds capabilities or may gain privileges"
 echo "::endgroup::"
 
 echo "::group::2. the device's permissions apply in an ordinary container, which then runs a guest"
