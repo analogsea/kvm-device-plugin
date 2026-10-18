@@ -1,0 +1,25 @@
+# A Pod that uses KVM as an ordinary container: not privileged, not root, no capabilities. It requests one unit of
+# the resource, which gives it the node's /dev/kvm. If the node's /dev/kvm is mode 0660, add the device's group ID to
+# supplementalGroups. Replace the image with your own; this one runs kvm-smoke, which runs a few guest instructions.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kvm-consumer
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: kvm-smoke
+      image: kvm-smoke:local
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      resources:
+        limits:
+          devices.analogsea.ca/kvm: 1
