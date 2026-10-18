@@ -11,8 +11,8 @@ management, no CPU or memory policy, no other devices.
 | Implemented | The plugin; a static binary and a minimal image for Linux amd64 and arm64; a DaemonSet; release automation. |
 | Tested | Unit tests, and tests against a fake kubelet over real Unix sockets, run by `mise run check` and CI. |
 | Tested on real KVM, amd64 | Every pull request runs the plugin and its consumers on a disposable [kind](https://kind.sigs.k8s.io/) cluster (Kubernetes v1.37) on a GitHub-hosted runner; releases require it to pass. |
-| Tested on real KVM, arm64 | Partly, once by hand: the CI-built binaries ran a guest, as a non-root user with only the device's group, and the plugin found KVM healthy, on a bare-metal arm64 Linux server with 64 KiB pages. Hosted arm64 runners have no KVM, so CI cannot repeat this, and the plugin has not run under Kubernetes on arm64. |
-| Tested on other clusters | Not yet: only kind. |
+| Tested on real KVM, arm64 | By hand, on a bare-metal arm64 Linux server with 64 KiB pages. The CI-built binaries ran a guest as a non-root user with only the device's group. On the same server as a node of a Kubernetes v1.36 cluster using CRI-O, the released image registered, non-root consumers ran guests, and a consumer running a guest every second kept running through a plugin rollout. Hosted arm64 runners have no KVM, so CI cannot repeat this. |
+| Tested on other clusters | Once by hand: the Kubernetes v1.36 cluster using CRI-O above, without restarting kubelet or changing the device. |
 | Released | See [releases](https://github.com/analogsea/kvm-device-plugin/releases). |
 
 ## How it works
@@ -66,7 +66,9 @@ owner, group and mode, and the container runtime copies them into the container 
 instead be configured to give the device the pod's user and group). A container running as root can open it. With
 mode `0666`, systemd's default, any user can. With `0660`, a non-root container needs the device's group, whose ID
 varies by distribution, for example through `supplementalGroups`. The kind node image in our tests (Kubernetes v1.37),
-for instance, uses `0660` with group `kvm` as ID 994. Run `stat -c '%a %g' /dev/kvm` on the node to see its policy.
+for instance, uses `0660` with group `kvm` as ID 994. CRI-O 1.36 instead gave the container's device mode `0666`,
+keeping the group, so there a non-root container needed no group; set it anyway if pods may run on other runtimes.
+Run `stat -c '%a %g' /dev/kvm` on the node to see its policy.
 
 Consumers need no privileges. The acceptance tests run them non-root under the `restricted` Pod Security Standard, and
 check that they hold no capabilities. The plugin itself does need privileged mode: see
@@ -138,9 +140,11 @@ SIGINT, 2 for invalid options and 1 if it cannot run.
 - Only one device, the host's `/dev/kvm`, can be shared. Topology hints and preferred allocations are not offered.
 - The plugin must open the node's KVM device to check it. Kubernetes grants a container a host device only through
   privileged mode, so the plugin runs privileged, as root, with a read-only root filesystem. The DaemonSet asks to drop
-  all capabilities, but containerd gives a privileged container every capability regardless: the acceptance tests
-  measure the plugin's effective and bounding sets as the kernel's full set, under containerd 2. The plugin needs none
-  of them. Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of this.
+  all capabilities, but the container runtime gives a privileged container every capability regardless: the
+  acceptance tests measure the plugin's effective and bounding sets as the kernel's full set under containerd 2, and a
+  run by hand found the same under CRI-O 1.36, with full inheritable and ambient sets and no seccomp filter too. The
+  plugin needs none of them. Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of
+  this.
 - A KVM module loaded after the plugin starts should be found, because the plugin reads the node's `/dev` through a
   host mount, but no test covers this: kind cannot load modules.
 - Any client that watches the plugin's devices counts as kubelet for detecting a lost connection.
