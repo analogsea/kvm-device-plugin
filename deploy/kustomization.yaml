@@ -1,0 +1,6 @@
+# The plugin's DaemonSet. Apply with `kubectl apply -k deploy/`, after labelling the nodes that should offer KVM; pin
+# the image by digest in an overlay for production.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - daemonset.yaml

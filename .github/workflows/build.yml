@@ -1,0 +1,270 @@
+name: Build
+
+# Builds the static release binaries and the plugin's image for both architectures, tests them against real KVM on
+# a disposable kind cluster, and rehearses publishing the image into a throwaway registry. Every pull request runs it,
+# and `build ok` is the check a merge requires; acceptance is informational there and required when publish.yml calls
+# this to build the tag it publishes. Pushes to main run it too, so pull requests and tags start from main's caches.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - Containerfile
+      - LICENSE
+      - THIRD_PARTY.md
+      - mise.toml
+      - crates/**
+      - proto/**
+      - scripts/**
+      - deploy/**
+      - tools/kvm-smoke/**
+      - .github/workflows/build.yml
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit or tag to build
+        type: string
+        required: true
+      skip-rehearsal:
+        description: Skip rehearsing the image's publication
+        type: boolean
+        default: false
+      require-acceptance:
+        description: Fail unless the real-KVM acceptance tests pass on every architecture that has KVM
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A newer push to a pull request replaces its running build. A called run takes the caller's github context, so it
+# gets a group of its own that can't collide with the caller's.
+concurrency:
+  group: build-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Builds need only Rust and cargo-about, and acceptance only kind and kubectl, which it installs alone.
+  MISE_DISABLE_TOOLS: aqua:gitleaks/gitleaks,aqua:rvben/rumdl,aqua:rhysd/actionlint,aqua:koalaman/shellcheck,aqua:kubernetes-sigs/kind,aqua:kubernetes/kubectl
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p kvm-device-plugin -p kvm-smoke --target "$TARGET"
+      - name: Check the binary is this version, runs here and is static
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "kvm-device-plugin") | .version')
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          bin="target/$TARGET/release/kvm-device-plugin"
+          test "$("$bin" --version)" = "kvm-device-plugin $version"
+          file "$bin" | tee /dev/stderr | grep -q 'static'
+      - name: Package
+        run: |
+          version="$VERSION"
+          stage="kvm-device-plugin-$version-$TARGET"
+          mkdir -p "dist/$stage"
+          cp "target/$TARGET/release/kvm-device-plugin" LICENSE "dist/$stage/"
+          mise run notices -- "dist/$stage/THIRD_PARTY_NOTICES.md"
+          for section in '## Rust crates' '## musl 1.2.5' "## The Rust project's standard library" '## Kubernetes'; do
+            grep -q "^$section" "dist/$stage/THIRD_PARTY_NOTICES.md"
+          done
+          tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+      # Only acceptance uses kvm-smoke; releases don't ship it.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/kvm-smoke
+          if-no-files-found: error
+
+  image:
+    name: image ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist
+      - name: Stage the binary and the notices
+        run: |
+          archive=$(basename dist/kvm-device-plugin-*.tar.gz)
+          version=${archive#kvm-device-plugin-}
+          echo "VERSION=${version%-"${{ matrix.target }}".tar.gz}" >> "$GITHUB_ENV"
+          tar -xzf dist/kvm-device-plugin-*.tar.gz -C dist
+          mkdir -p "dist/$ARCH"
+          mv dist/kvm-device-plugin-*/kvm-device-plugin "dist/$ARCH/kvm-device-plugin"
+          mv dist/kvm-device-plugin-*/THIRD_PARTY_NOTICES.md dist/
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Timestamps come from the commit, so rebuilding a commit changes as little as possible.
+      - name: Build the archive, and run it on this architecture
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          docker buildx build --platform "linux/$ARCH" --provenance=false \
+            --output "type=oci,dest=image-$ARCH.tar,rewrite-timestamp=true" --file Containerfile .
+          skopeo copy "oci-archive:image-$ARCH.tar" docker-daemon:kvm-device-plugin:test
+          test "$(docker image inspect --format '{{.Architecture}}' kvm-device-plugin:test)" = "$ARCH"
+          test "$(docker run --rm kvm-device-plugin:test --version)" = "kvm-device-plugin $VERSION"
+          if docker run --rm --entrypoint /bin/sh kvm-device-plugin:test -c true; then
+            echo "the image must not contain a shell" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: image-${{ matrix.arch }}.tar
+          if-no-files-found: error
+
+  acceptance:
+    name: acceptance ${{ matrix.arch }}
+    needs: image
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, target: x86_64-unknown-linux-musl, runner: ubuntu-24.04 }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    env:
+      ARCH: ${{ matrix.arch }}
+      MISE_DISABLE_TOOLS: rust,github:EmbarkStudios/cargo-about,aqua:gitleaks/gitleaks,aqua:rvben/rumdl,aqua:rhysd/actionlint,aqua:koalaman/shellcheck
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install_args: aqua:kubernetes-sigs/kind aqua:kubernetes/kubectl
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: images
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: smoke-${{ matrix.target }}
+          path: smoke
+      # Hosted amd64 runners expose KVM; if this one doesn't, acceptance fails rather than pass without testing.
+      # Hosted arm64 runners may not, so there the job says plainly that KVM went untested.
+      - name: Check for KVM
+        id: kvm
+        run: |
+          chmod +x smoke/kvm-smoke
+          if [ -e /dev/kvm ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ "$ARCH" = amd64 ]; then
+            echo "::error::this amd64 runner has no /dev/kvm"
+            exit 1
+          else
+            echo "::warning::this $ARCH runner has no /dev/kvm, so real KVM was not exercised on $ARCH"
+            echo "- $ARCH real-KVM acceptance was NOT exercised: the runner has no /dev/kvm" >> "$GITHUB_STEP_SUMMARY"
+            status=0
+            smoke/kvm-smoke || status=$?
+            test "$status" = 3
+            skopeo copy "oci-archive:images/image-$ARCH.tar" docker-daemon:kvm-device-plugin:acceptance
+            docker run --rm kvm-device-plugin:acceptance --version
+          fi
+      - name: Run acceptance on kind
+        if: steps.kvm.outputs.present == 'true'
+        run: |
+          {
+            echo "### $ARCH real-KVM acceptance"
+            if [ "${{ inputs.require-acceptance == true }}" != true ]; then echo "Informational on pull requests."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/acceptance.sh "images/image-$ARCH.tar" smoke/kvm-smoke
+
+  rehearse:
+    name: rehearse publishing
+    # Outside a call the input is null, and `!null` is true, so pull requests and pushes rehearse.
+    if: ${{ !inputs.skip-rehearsal }}
+    needs: image
+    runs-on: ubuntu-24.04
+    services:
+      registry:
+        image: docker.io/library/registry:3.1.2@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+        ports: ["5000:5000"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: images
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: network=host
+      - run: sh scripts/publish-image.sh localhost:5000/kvm-device-plugin rehearsal images --latest --dest-tls-verify=false
+      # This runner is amd64; publish.yml's verify job pulls the published index on both architectures.
+      - name: Check the index holds both architectures and runs here
+        run: |
+          image=localhost:5000/kvm-device-plugin
+          docker buildx imagetools inspect "$image:rehearsal" --format '{{json .Manifest}}' \
+            | jq -e '[.manifests[].platform.architecture] | sort == ["amd64", "arm64"]'
+          test "$(docker buildx imagetools inspect "$image:rehearsal" --format '{{json .Manifest.Digest}}')" \
+            = "$(docker buildx imagetools inspect "$image:latest" --format '{{json .Manifest.Digest}}')"
+          docker run --rm "$image:rehearsal" --version
+
+  # The one check a merge requires, so the requirement survives changes to the matrix. A skipped job would count as
+  # passing, so this fails unless every job succeeded, or the rehearsal was skipped because the caller asked.
+  # Acceptance counts only when the caller requires it, but this still waits for it, a few minutes, so publishing sees
+  # one result for the whole pipeline.
+  ok:
+    name: build ok
+    if: ${{ !cancelled() }}
+    needs: [build, image, acceptance, rehearse]
+    runs-on: ubuntu-24.04
+    env:
+      BUILD: ${{ needs.build.result }}
+      IMAGE: ${{ needs.image.result }}
+      ACCEPTANCE: ${{ needs.acceptance.result }}
+      REHEARSE: ${{ needs.rehearse.result }}
+      SKIP_REHEARSAL: ${{ inputs.skip-rehearsal == true }}
+      REQUIRE_ACCEPTANCE: ${{ inputs.require-acceptance == true }}
+    steps:
+      - run: |
+          echo "build: $BUILD, image: $IMAGE, acceptance: $ACCEPTANCE, rehearse: $REHEARSE"
+          test "$BUILD" = success
+          test "$IMAGE" = success
+          test "$REHEARSE" = success || { test "$SKIP_REHEARSAL" = true && test "$REHEARSE" = skipped; }
+          test "$REQUIRE_ACCEPTANCE" != true || test "$ACCEPTANCE" = success

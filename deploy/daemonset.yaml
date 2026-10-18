@@ -1,0 +1,62 @@
+# Runs the plugin on every node labelled kvm-device-plugin.analogsea.ca/enabled=true. The plugin must open the node's
+# /dev/kvm to check it, and Kubernetes can grant a container that device only through privileged mode, so the
+# container is privileged; it needs no capabilities, and drops them where the runtime honours that. It mounts
+# kubelet's device-plugin directory, to register, and the node's /dev read-only, so a KVM module loaded after the
+# plugin starts is still found. Containers that use KVM need none of this: they request the resource.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kvm-device-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kvm-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kvm-device-plugin
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kvm-device-plugin
+    spec:
+      nodeSelector:
+        kvm-device-plugin.analogsea.ca/enabled: "true"
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      # The plugin stops within about 10 seconds of SIGTERM.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: kvm-device-plugin
+          image: ghcr.io/analogsea/kvm-device-plugin:0.1.0 # x-release-please-version
+          args:
+            - --kvm-path=/host/dev/kvm
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: device-plugins
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: dev
+              mountPath: /host/dev
+              readOnly: true
+      volumes:
+        - name: device-plugins
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+            type: Directory
+        - name: dev
+          hostPath:
+            path: /dev
+            type: Directory
