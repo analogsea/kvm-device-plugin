@@ -1,8 +1,8 @@
 # Runs the plugin on every node labelled kvm-device-plugin.analogsea.ca/enabled=true. The plugin must open the node's
 # /dev/kvm to check it, and Kubernetes can grant a container that device only through privileged mode, so the
-# container is privileged; it needs no capabilities, and drops them where the runtime honours that. It mounts
-# kubelet's device-plugin directory, to register, and the node's /dev read-only, so a KVM module loaded after the
-# plugin starts is still found. Containers that use KVM need none of this: they request the resource.
+# container is privileged; it needs no capabilities and asks to drop them, though containerd ignores that for a
+# privileged container. It mounts kubelet's device-plugin directory, to register, and the node's /dev read-only, so a
+# KVM module loaded after the plugin starts is still found. Containers that use KVM need none of this: they request the resource.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
