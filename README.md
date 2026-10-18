@@ -83,7 +83,7 @@ that release's notes. For example, with a kustomization of your own:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - https://github.com/analogsea/kvm-device-plugin//deploy?ref=v0.1.0 # x-release-please-version
+  - https://github.com/analogsea/kvm-device-plugin//deploy?ref=v0.2.0 # x-release-please-version
 images:
   - name: ghcr.io/analogsea/kvm-device-plugin
     digest: sha256:... # from the release notes
