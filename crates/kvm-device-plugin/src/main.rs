@@ -4,7 +4,7 @@ use std::sync::Arc;
 use clap::Parser;
 use kvm_device_plugin::config::{Cli, Config};
 use kvm_device_plugin::health::KvmProbe;
-use kvm_device_plugin::supervisor;
+use kvm_device_plugin::{privileges, supervisor};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio_util::sync::CancellationToken;
 
@@ -17,6 +17,11 @@ fn main() -> ExitCode {
         },
     };
     tracing_subscriber::fmt().with_writer(std::io::stderr).with_target(false).init();
+    // Before the runtime starts any thread, so that every thread starts without them.
+    if let Err(err) = privileges::drop_capabilities() {
+        tracing::error!("{err}");
+        return ExitCode::FAILURE;
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
