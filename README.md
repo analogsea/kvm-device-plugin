@@ -139,8 +139,8 @@ SIGINT, 2 for invalid options and 1 if it cannot run.
 - The plugin must open the node's KVM device to check it. Kubernetes grants a container a host device only through
   privileged mode, so the plugin runs privileged, as root, with a read-only root filesystem. The DaemonSet asks to drop
   all capabilities, but containerd gives a privileged container every capability regardless: the acceptance tests
-  measure the plugin's effective set as equal to its bounding set, under containerd 2. The plugin needs none of them.
-  Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of this.
+  measure the plugin's effective and bounding sets as the kernel's full set, under containerd 2. The plugin needs none
+  of them. Unprivileged, it registers but always reports KVM as unhealthy. Consumers need none of this.
 - A KVM module loaded after the plugin starts should be found, because the plugin reads the node's `/dev` through a
   host mount, but no test covers this: kind cannot load modules.
 - Any client that watches the plugin's devices counts as kubelet for detecting a lost connection.

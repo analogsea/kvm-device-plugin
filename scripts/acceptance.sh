@@ -119,7 +119,7 @@ expect_runner_undisturbed() {
   [ "$(kubectl -n "$namespace" get pod runner -o 'jsonpath={.metadata.uid} {.status.phase}')" = "$runner_uid Running" ] \
     || { kubectl -n "$namespace" logs runner | tail -5 || true; fail "the running guest loop stopped $1"; }
   runs=$(guest_runs)
-  wait_for 10 "the running guest loop runs a new guest $1, after $runs" runs_more_than "$runs"
+  wait_for 10 "the running guest loop runs a new guest $1, guest number $((runs + 1))," runs_more_than "$runs"
 }
 
 # Starts a Pod that holds one unit of the resource until deleted.
@@ -240,9 +240,11 @@ plugin_uid=$(plugin_pod metadata.uid)
 plugin_credentials=$(credentials kvm-device-plugin)
 note "$(node_kvm containerd --version | cut -d' ' -f1-3); the plugin's credentials: $(tr '\t\n' ' ;' <<< "$plugin_credentials")"
 [ "$(field Uid "$plugin_credentials")" = 0 ] || fail "the plugin does not run as root"
-[ "$(field CapEff "$plugin_credentials")" = "$(field CapBnd "$plugin_credentials")" ] \
-  && [ "$(field CapEff "$plugin_credentials")" != 0000000000000000 ] \
-  || fail "the plugin does not hold every capability, so the README is out of date"
+# The kind node is itself a privileged container, so its init holds every capability the kernel has.
+all_capabilities=$(field CapBnd "$(node_kvm grep '^CapBnd:' /proc/1/status)")
+[ "$(field CapEff "$plugin_credentials")" = "$all_capabilities" ] \
+  && [ "$(field CapBnd "$plugin_credentials")" = "$all_capabilities" ] \
+  || fail "the plugin does not hold every capability ($all_capabilities), so the README is out of date"
 echo "::endgroup::"
 
 echo "::group::2. the device's permissions apply in an ordinary container, which then runs a guest"
