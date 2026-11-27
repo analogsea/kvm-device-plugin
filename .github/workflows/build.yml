@@ -90,17 +90,20 @@ jobs:
             grep -q "^$section" "dist/$stage/THIRD_PARTY_NOTICES.md"
           done
           tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+      # Every artifact here hands files to a later job in the same run, so one day is enough.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archive-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
+          retention-days: 1
       # Only acceptance uses kvm-smoke; releases don't ship it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: smoke-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/kvm-smoke
           if-no-files-found: error
+          retention-days: 1
 
   image:
     name: image ${{ matrix.arch }}
@@ -151,6 +154,7 @@ jobs:
           name: image-${{ matrix.arch }}
           path: image-${{ matrix.arch }}.tar
           if-no-files-found: error
+          retention-days: 1
 
   acceptance:
     name: acceptance ${{ matrix.arch }}
